@@ -1,5 +1,5 @@
 ﻿// TradingConsole.Wpf/Services/Analysis/ThesisSynthesizer.cs
-// --- MODIFIED: Complete overhaul of conviction scoring to use confluence and handle market phases/chop. ---
+// --- MODIFIED: Added a strategic trend filter based on user's trading experience ---
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -28,23 +28,22 @@ namespace TradingConsole.Wpf.Services
         {
             if (result.InstrumentGroup != "INDEX") return;
 
-            // Step 1: Determine the high-level thesis and dominant player
             MarketThesis thesis = UpdateIntradayThesis(result);
             result.MarketThesis = thesis;
 
-            // Step 2: Calculate conviction score using the new confluence-based model
             var (bullDrivers, bearDrivers, conviction, isChoppy) = CalculateConfluenceScore(result, thesis);
             result.BullishDrivers = bullDrivers;
             result.BearishDrivers = bearDrivers;
 
-            // --- NEW: Handle Market Open Volatility ---
             if (_stateManager.CurrentMarketPhase == MarketPhase.Opening)
             {
                 conviction = (int)Math.Round(conviction * 0.5); // Reduce conviction by 50% during open
             }
+
+            // --- NEW: Apply the user's strategic trend filter ---
+            conviction = ApplyTrendFilter(result, conviction);
             result.ConvictionScore = conviction;
 
-            // Step 3: Determine final signal based on score and market condition
             string playbook;
             if (isChoppy)
             {
@@ -59,13 +58,12 @@ namespace TradingConsole.Wpf.Services
             else playbook = "Neutral / Observe";
 
             string newPrimarySignal = "Neutral";
-            if (!isChoppy) // Do not generate primary signals in choppy markets
+            if (!isChoppy)
             {
                 if (conviction >= 3) newPrimarySignal = "Bullish";
                 else if (conviction <= -3) newPrimarySignal = "Bearish";
             }
 
-            // Step 4: Update result and log/notify if signal has changed
             string oldPrimarySignal = result.PrimarySignal;
             result.PrimarySignal = newPrimarySignal;
             result.FinalTradeSignal = playbook;
@@ -75,7 +73,7 @@ namespace TradingConsole.Wpf.Services
             {
                 if (_stateManager.LastSignalTime.TryGetValue(result.SecurityId, out var lastTime) && (DateTime.UtcNow - lastTime).TotalSeconds < 60)
                 {
-                    return; // Debounce signals to prevent rapid flipping
+                    return;
                 }
                 _stateManager.LastSignalTime[result.SecurityId] = DateTime.UtcNow;
 
@@ -85,26 +83,62 @@ namespace TradingConsole.Wpf.Services
         }
 
         /// <summary>
-        /// REVISED: Calculates conviction score by grouping correlated signals to avoid double-counting
-        /// and explicitly detects choppy market conditions.
+        /// NEW: Applies a strategic filter based on the overall market trend, as per user's experience.
+        /// This acts as a final gatekeeper for signals.
         /// </summary>
+        private int ApplyTrendFilter(AnalysisResult result, int currentConviction)
+        {
+            bool isAtSupport = result.CustomLevelSignal == "At Key Support" || result.DayRangeSignal == "Near Low" || result.VwapBandSignal == "At Lower Band";
+            bool isAtResistance = result.CustomLevelSignal == "At Key Resistance" || result.DayRangeSignal == "Near High" || result.VwapBandSignal == "At Upper Band";
+
+            // Rule 1: In a bullish market ("Trending Up")
+            if (result.MarketStructure == "Trending Up")
+            {
+                // Veto any sell signals (counter-trend shorts)
+                if (currentConviction < 0)
+                {
+                    return 0; // Force to neutral
+                }
+                // Reward buy signals that occur at support levels (buy the dip)
+                if (currentConviction > 0 && isAtSupport)
+                {
+                    return currentConviction + 2; // Add a bonus to the conviction score
+                }
+            }
+
+            // Rule 2: In a bearish market ("Trending Down")
+            if (result.MarketStructure == "Trending Down")
+            {
+                // Veto any buy signals (counter-trend longs)
+                if (currentConviction > 0)
+                {
+                    return 0; // Force to neutral
+                }
+                // Reward sell signals that occur at resistance levels (sell the rip)
+                if (currentConviction < 0 && isAtResistance)
+                {
+                    return currentConviction - 2; // Add a bonus to the conviction score (make it more negative)
+                }
+            }
+
+            // In a balancing/choppy market, no filter is applied. Return the original score.
+            return currentConviction;
+        }
+
         private (List<string> BullishDrivers, List<string> BearishDrivers, int Score, bool IsChoppy) CalculateConfluenceScore(AnalysisResult r, MarketThesis thesis)
         {
             var bullDrivers = new List<string>();
             var bearDrivers = new List<string>();
 
-            // Define signal groups to prevent correlation issues
             int structureScore = 0;
             int momentumScore = 0;
             int confirmationScore = 0;
 
-            // --- Group 1: Market Structure (Long-Term Context) ---
             if (r.MarketStructure == "Trending Up") structureScore += 3;
             if (r.MarketStructure == "Trending Down") structureScore -= 3;
             if (r.YesterdayProfileSignal == "Trading Above Y-VAH") structureScore += 2;
             if (r.YesterdayProfileSignal == "Trading Below Y-VAL") structureScore -= 2;
 
-            // --- Group 2: Intraday Momentum ---
             if (r.PriceVsVwapSignal == "Above VWAP") momentumScore += 2;
             if (r.PriceVsVwapSignal == "Below VWAP") momentumScore -= 2;
             if (r.EmaSignal5Min == "Bullish Cross") momentumScore += 2;
@@ -112,24 +146,19 @@ namespace TradingConsole.Wpf.Services
             if (r.CandleSignal5Min.Contains("Bullish")) momentumScore += 1;
             if (r.CandleSignal5Min.Contains("Bearish")) momentumScore -= 1;
 
-            // --- Group 3: Confirmation (Volume, OI, Volatility) ---
             if (r.VolumeSignal == "Volume Burst" && r.LTP > r.Vwap) confirmationScore += 2;
             if (r.VolumeSignal == "Volume Burst" && r.LTP < r.Vwap) confirmationScore -= 2;
             if (r.OiSignal == "Long Buildup") confirmationScore += 2;
             if (r.OiSignal == "Short Buildup") confirmationScore -= 2;
-            if (r.IntradayIvSpikeSignal == "IV Spike Up") confirmationScore += 1; // IV spike can confirm a breakout
+            if (r.IntradayIvSpikeSignal == "IV Spike Up") confirmationScore += 1;
 
-            // --- NEW: Logic to detect conflicting signals (chop) ---
-            bool isChoppy = (Math.Abs(structureScore) < 2 && Math.Abs(momentumScore) < 2) || // No clear direction
-                            (structureScore > 2 && momentumScore < -2) || // Structure is bullish but momentum is bearish
-                            (structureScore < -2 && momentumScore > 2);  // Structure is bearish but momentum is bullish
+            bool isChoppy = (Math.Abs(structureScore) < 2 && Math.Abs(momentumScore) < 2) ||
+                            (structureScore > 2 && momentumScore < -2) ||
+                            (structureScore < -2 && momentumScore > 2);
 
-            // Combine scores based on confluence
             int finalScore = structureScore + momentumScore + confirmationScore;
 
-            // Populate driver lists for UI display (simplified for brevity)
             if (structureScore > 0) bullDrivers.Add($"Structure Bullish (+{structureScore})"); else if (structureScore < 0) bearDrivers.Add($"Structure Bearish ({structureScore})");
-            // --- THIS IS THE CORRECTED LINE ---
             if (momentumScore > 0) bullDrivers.Add($"Momentum Bullish (+{momentumScore})"); else if (momentumScore < 0) bearDrivers.Add($"Momentum Bearish ({momentumScore})");
             if (confirmationScore > 0) bullDrivers.Add($"Confirmation Bullish (+{confirmationScore})"); else if (confirmationScore < 0) bearDrivers.Add($"Confirmation Bearish ({confirmationScore})");
 

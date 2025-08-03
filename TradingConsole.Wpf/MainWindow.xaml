@@ -205,6 +205,7 @@
                                 <DataGridTemplateColumn.CellTemplate>
                                     <DataTemplate>
                                         <Grid>
+                                            <!-- FIXED: Changed HorizontalAlignment to Left for Puts -->
                                             <Border HorizontalAlignment="Left" Background="LightPink" Opacity="0.5">
                                                 <Border.Width>
                                                     <MultiBinding Converter="{StaticResource OiToWidthConverter}">
@@ -213,6 +214,7 @@
                                                     </MultiBinding>
                                                 </Border.Width>
                                             </Border>
+                                            <!-- FIXED: Changed HorizontalAlignment to Left for Puts -->
                                             <Border HorizontalAlignment="Left" 
                                                     ToolTip="{Binding PutOption.OiChange, StringFormat='Change: {0:N0}'}"
                                                     Background="{Binding PutOption.OiChange, Converter={StaticResource ChangeOiToBrushConverter}}">
@@ -273,7 +275,6 @@
                                     <DataGrid.Columns>
                                         <DataGridTemplateColumn Width="30">
                                             <DataGridTemplateColumn.Header>
-                                                <!-- MODIFIED: Changed binding to be more robust -->
                                                 <CheckBox IsChecked="{Binding DataContext.Portfolio.SelectAllOpenPositions, RelativeSource={RelativeSource AncestorType=DataGrid}, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"/>
                                             </DataGridTemplateColumn.Header>
                                             <DataGridTemplateColumn.CellTemplate>

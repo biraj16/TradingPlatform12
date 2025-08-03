@@ -16,8 +16,12 @@ namespace TradingConsole.Wpf.Converters
                 return 0.0;
             }
 
-            if (values[0] is decimal changeOi && values[1] is decimal maxOiChange)
+            // --- REVISED FIX: Handle multiple numeric types to be more robust ---
+            try
             {
+                decimal changeOi = System.Convert.ToDecimal(values[0]);
+                decimal maxOiChange = System.Convert.ToDecimal(values[1]);
+
                 if (maxOiChange > 0)
                 {
                     double absoluteChange = (double)Math.Abs(changeOi);
@@ -25,6 +29,11 @@ namespace TradingConsole.Wpf.Converters
                     double width = (absoluteChange / maxChange) * MaxWidth;
                     return Math.Min(width, MaxWidth);
                 }
+            }
+            catch (Exception)
+            {
+                // If conversion fails for any reason, return 0 width
+                return 0.0;
             }
 
             return 0.0;
