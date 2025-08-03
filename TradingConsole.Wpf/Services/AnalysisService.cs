@@ -9,98 +9,41 @@ using System.Threading.Tasks;
 using TradingConsole.Core.Models;
 using TradingConsole.DhanApi;
 using TradingConsole.DhanApi.Models;
+using TradingConsole.Wpf.Services.Analysis;
 using TradingConsole.Wpf.ViewModels;
 
 namespace TradingConsole.Wpf.Services
 {
-    // --- MAGA REFACTOR: Renamed for clarity ---
     public enum MarketThesis
     {
-        // Bullish Theses
-        Bullish_Trend,
-        Bullish_Rotation,
-        Bullish_Reversal_Attempt,
-
-        // Bearish Theses
-        Bearish_Trend,
-        Bearish_Rotation,
-        Bearish_Reversal_Attempt,
-
-        // Neutral / Balancing Theses
-        Balancing,
-        Indeterminate
+        Bullish_Trend, Bullish_Rotation, Bullish_Reversal_Attempt,
+        Bearish_Trend, Bearish_Rotation, Bearish_Reversal_Attempt,
+        Balancing, Indeterminate
     }
 
-    // --- MAGA REFACTOR: New enum to determine who is in control ---
     public enum DominantPlayer
     {
-        Buyers,
-        Sellers,
-        Balance,
-        Indeterminate
+        Buyers, Sellers, Balance, Indeterminate
     }
 
     public class AnalysisService : INotifyPropertyChanged
     {
-        #region Parameters and State
+        #region Services and Parameters
         private readonly SettingsViewModel _settingsViewModel;
         private readonly DhanApiClient _apiClient;
         private readonly ScripMasterService _scripMasterService;
-        private readonly HistoricalIvService _historicalIvService;
         private readonly MarketProfileService _marketProfileService;
         private readonly IndicatorStateService _indicatorStateService;
-        private readonly SignalLoggerService _signalLoggerService;
-        private readonly NotificationService _notificationService;
-        private readonly DashboardViewModel _dashboardViewModel;
-        private readonly Dictionary<string, List<MarketProfileData>> _historicalMarketProfiles = new Dictionary<string, List<MarketProfileData>>();
 
-        private readonly Dictionary<string, IntradayIvState.CustomLevelState> _customLevelStates = new();
-        private readonly HashSet<string> _backfilledInstruments = new HashSet<string>();
-        private readonly Dictionary<string, AnalysisResult> _analysisResults = new();
-        private readonly Dictionary<string, MarketProfile> _marketProfiles = new Dictionary<string, MarketProfile>();
-        private readonly Dictionary<string, (bool isBreakout, bool isBreakdown)> _initialBalanceState = new();
+        private readonly AnalysisStateManager _stateManager;
+        private readonly IndicatorService _indicatorService;
+        private readonly SignalGenerationService _signalGenerationService;
+        private readonly ThesisSynthesizer _thesisSynthesizer;
 
         private readonly Dictionary<string, DashboardInstrument> _instrumentCache = new();
-        private readonly Dictionary<string, RelativeStrengthState> _relativeStrengthStates = new();
-        private readonly Dictionary<string, IvSkewState> _ivSkewStates = new();
         private readonly Dictionary<string, DateTime> _nearestExpiryDates = new();
-        // --- ADDED: Dictionary to track the last signal time to prevent flapping ---
-        private readonly Dictionary<string, DateTime> _lastSignalTime = new Dictionary<string, DateTime>();
-
-
-        public int ShortEmaLength { get; set; }
-        public int LongEmaLength { get; set; }
-        public int AtrPeriod { get; set; }
-        public int AtrSmaPeriod { get; set; }
-        public int RsiPeriod { get; set; }
-        public int RsiDivergenceLookback { get; set; }
-        public int VolumeHistoryLength { get; set; }
-        public double VolumeBurstMultiplier { get; set; }
-        public int IvHistoryLength { get; set; }
-        public decimal IvSpikeThreshold { get; set; }
-        public int ObvMovingAveragePeriod { get; set; }
-        public decimal VwapUpperBandMultiplier { get; set; }
-        public decimal VwapLowerBandMultiplier { get; set; }
-
-
-        private const int MinIvHistoryForSignal = 2;
-        private readonly List<TimeSpan> _timeframes = new()
-        {
-            TimeSpan.FromMinutes(1),
-            TimeSpan.FromMinutes(5),
-            TimeSpan.FromMinutes(15)
-        };
-        private readonly Dictionary<string, (decimal cumulativePriceVolume, long cumulativeVolume, List<decimal> ivHistory)> _tickAnalysisState = new();
-        private readonly Dictionary<string, Dictionary<TimeSpan, List<Candle>>> _multiTimeframeCandles = new();
-        private readonly Dictionary<string, Dictionary<TimeSpan, EmaState>> _multiTimeframePriceEmaState = new();
-        private readonly Dictionary<string, Dictionary<TimeSpan, EmaState>> _multiTimeframeVwapEmaState = new();
-        private readonly Dictionary<string, Dictionary<TimeSpan, RsiState>> _multiTimeframeRsiState = new();
-        private readonly Dictionary<string, Dictionary<TimeSpan, AtrState>> _multiTimeframeAtrState = new();
-        private readonly Dictionary<string, Dictionary<TimeSpan, ObvState>> _multiTimeframeObvState = new();
-        private readonly Dictionary<string, IntradayIvState> _intradayIvStates = new Dictionary<string, IntradayIvState>();
 
         public event Action<AnalysisResult>? OnAnalysisUpdated;
-
         public event Action<string, Candle, TimeSpan>? CandleUpdated;
         #endregion
 
@@ -109,15 +52,139 @@ namespace TradingConsole.Wpf.Services
             _settingsViewModel = settingsViewModel;
             _apiClient = apiClient;
             _scripMasterService = scripMasterService;
-            _historicalIvService = historicalIvService;
             _marketProfileService = marketProfileService;
             _indicatorStateService = indicatorStateService;
-            _signalLoggerService = signalLoggerService;
-            _notificationService = notificationService;
-            _dashboardViewModel = dashboardViewModel;
 
-            UpdateParametersFromSettings();
+            _stateManager = new AnalysisStateManager();
+            _indicatorService = new IndicatorService(_stateManager);
+            _signalGenerationService = new SignalGenerationService(_stateManager, settingsViewModel, historicalIvService);
+            _thesisSynthesizer = new ThesisSynthesizer(settingsViewModel, signalLoggerService, notificationService, _stateManager);
         }
+
+        // --- REVISED HELPER METHOD ---
+        /// <summary>
+        /// Checks if the market is currently open (is a trading day and within market hours).
+        /// </summary>
+        private bool IsMarketOpen()
+        {
+            try
+            {
+                var istZone = TimeZoneInfo.FindSystemTimeZoneById("India Standard Time");
+                var istNow = TimeZoneInfo.ConvertTimeFromUtc(DateTime.UtcNow, istZone);
+
+                // Check 1: Is it a valid trading day?
+                if (istNow.DayOfWeek == DayOfWeek.Saturday || istNow.DayOfWeek == DayOfWeek.Sunday) return false;
+                if (_settingsViewModel.MarketHolidays.Contains(istNow.Date)) return false;
+
+                // Check 2: Is it within market hours?
+                var marketOpen = new TimeSpan(9, 15, 0);
+                var marketClose = new TimeSpan(15, 30, 0);
+                if (istNow.TimeOfDay < marketOpen || istNow.TimeOfDay > marketClose) return false;
+
+                return true;
+            }
+            catch (TimeZoneNotFoundException)
+            {
+                // Fallback for systems that might not have the IST time zone installed
+                Debug.WriteLine("WARNING: India Standard Time zone not found. Falling back to basic UTC checks.");
+                var now = DateTime.UtcNow;
+                if (now.DayOfWeek == DayOfWeek.Saturday || now.DayOfWeek == DayOfWeek.Sunday) return false;
+                return true; // Cannot reliably check time, so allow on weekdays.
+            }
+        }
+
+        public void OnInstrumentDataReceived(DashboardInstrument instrument, decimal underlyingPrice)
+        {
+            // --- FIX: Guard clause now checks for active market hours ---
+            if (!IsMarketOpen())
+            {
+                return;
+            }
+
+            if (string.IsNullOrEmpty(instrument.SecurityId)) return;
+            _instrumentCache[instrument.SecurityId] = instrument;
+
+            if (!_stateManager.BackfilledInstruments.Contains(instrument.SecurityId))
+            {
+                InitializeNewInstrument(instrument);
+            }
+
+            _signalGenerationService.UpdateIvMetrics(instrument, underlyingPrice);
+
+            var timeframes = new[] { TimeSpan.FromMinutes(1), TimeSpan.FromMinutes(5), TimeSpan.FromMinutes(15) };
+            foreach (var timeframe in timeframes)
+            {
+                AggregateIntoCandle(instrument, timeframe);
+            }
+        }
+
+        private void InitializeNewInstrument(DashboardInstrument instrument)
+        {
+            _stateManager.InitializeStateForInstrument(instrument.SecurityId, instrument.DisplayName, instrument.InstrumentType);
+            _stateManager.HistoricalMarketProfiles[instrument.SecurityId] = _marketProfileService.GetHistoricalProfiles(instrument.SecurityId);
+
+            if (!_stateManager.MarketProfiles.ContainsKey(instrument.SecurityId))
+            {
+                decimal tickSize = _signalGenerationService.GetTickSize(instrument);
+                var startTime = DateTime.Today.Add(new TimeSpan(9, 15, 0));
+                _stateManager.MarketProfiles[instrument.SecurityId] = new MarketProfile(tickSize, startTime);
+            }
+
+            LoadIndicatorStateFromStorage(instrument.SecurityId);
+            Task.Run(() => BackfillAndSavePreviousDayProfileAsync(instrument));
+            Task.Run(() => BackfillCurrentDayCandlesAsync(instrument));
+            RunDailyBiasAnalysis(instrument);
+        }
+
+        private void AggregateIntoCandle(DashboardInstrument instrument, TimeSpan timeframe)
+        {
+            var candles = _stateManager.GetCandles(instrument.SecurityId, timeframe);
+            if (candles == null) return;
+
+            var now = DateTime.UtcNow;
+            var candleTimestamp = new DateTime(now.Ticks - (now.Ticks % timeframe.Ticks), now.Kind);
+            var currentCandle = candles.LastOrDefault();
+
+            if (currentCandle == null || currentCandle.Timestamp != candleTimestamp)
+            {
+                var newCandle = new Candle { Timestamp = candleTimestamp, Open = instrument.LTP, High = instrument.LTP, Low = instrument.LTP, Close = instrument.LTP, Volume = instrument.LastTradedQuantity, OpenInterest = (long)instrument.OpenInterest, Vwap = instrument.AvgTradePrice };
+                candles.Add(newCandle);
+
+                if (currentCandle != null)
+                {
+                    if (timeframe.TotalMinutes == 1) UpdateMarketProfileForCandle(instrument, currentCandle);
+                    RunComplexAnalysis(instrument);
+                }
+                CandleUpdated?.Invoke(instrument.SecurityId, newCandle, timeframe);
+            }
+            else
+            {
+                currentCandle.High = Math.Max(currentCandle.High, instrument.LTP);
+                currentCandle.Low = Math.Min(currentCandle.Low, instrument.LTP);
+                currentCandle.Close = instrument.LTP;
+                currentCandle.Volume += instrument.LastTradedQuantity;
+                currentCandle.OpenInterest = (long)instrument.OpenInterest;
+                CandleUpdated?.Invoke(instrument.SecurityId, currentCandle, timeframe);
+            }
+        }
+
+        private void RunComplexAnalysis(DashboardInstrument instrument)
+        {
+            var result = _stateManager.GetResult(instrument.SecurityId);
+            result.PriceChange = instrument.LTP - instrument.Close;
+            result.PriceChangePercent = (instrument.Close > 0) ? (result.PriceChange / instrument.Close) : 0;
+
+            DashboardInstrument instrumentForAnalysis = GetInstrumentForVolumeAnalysis(instrument);
+
+            _signalGenerationService.GenerateAllSignals(instrument, instrumentForAnalysis, result);
+            _thesisSynthesizer.SynthesizeTradeSignal(result);
+
+            LinkFuturesDataToIndex();
+            OnAnalysisUpdated?.Invoke(result);
+        }
+
+        #region Passthrough and Helper Methods
+        public List<Candle>? GetCandles(string securityId, TimeSpan timeframe) => _stateManager.GetCandles(securityId, timeframe);
 
         public void SetNearestExpiryDates(Dictionary<string, string> expiryDates)
         {
@@ -128,23 +195,21 @@ namespace TradingConsole.Wpf.Services
                     _nearestExpiryDates[kvp.Key] = date.Date;
                 }
             }
-            Debug.WriteLine("[AnalysisService] Received and set nearest expiry dates.");
         }
-
 
         public void SaveIndicatorStates()
         {
-            foreach (var securityId in _multiTimeframePriceEmaState.Keys)
+            if (!IsMarketOpen()) return; // Do not save state if market is closed
+
+            var timeframes = new[] { TimeSpan.FromMinutes(1), TimeSpan.FromMinutes(5), TimeSpan.FromMinutes(15) };
+            foreach (var securityId in _stateManager.MultiTimeframePriceEmaState.Keys)
             {
-                foreach (var timeframe in _timeframes)
+                foreach (var timeframe in timeframes)
                 {
                     var key = $"{securityId}_{timeframe.TotalMinutes}";
-
-                    // --- FIX: No longer saving EMA state as it's recalculated on startup ---
-                    var rsiState = _multiTimeframeRsiState[securityId][timeframe];
-                    var atrState = _multiTimeframeAtrState[securityId][timeframe];
-                    var obvState = _multiTimeframeObvState[securityId][timeframe];
-
+                    var rsiState = _stateManager.MultiTimeframeRsiState[securityId][timeframe];
+                    var atrState = _stateManager.MultiTimeframeAtrState[securityId][timeframe];
+                    var obvState = _stateManager.MultiTimeframeObvState[securityId][timeframe];
                     var stateToSave = new IndicatorState
                     {
                         LastRsiAvgGain = rsiState.AvgGain,
@@ -153,426 +218,53 @@ namespace TradingConsole.Wpf.Services
                         LastObv = obvState.CurrentObv,
                         LastObvMovingAverage = obvState.CurrentMovingAverage
                     };
-
                     _indicatorStateService.UpdateState(key, stateToSave);
                 }
             }
             _indicatorStateService.SaveDatabase();
         }
-
-
         public void SaveMarketProfileDatabase()
         {
+            if (!IsMarketOpen()) return; // Do not save state if market is closed
             _marketProfileService.SaveDatabase();
         }
 
-        public void UpdateParametersFromSettings()
+        private void RunDailyBiasAnalysis(DashboardInstrument instrument)
         {
-            ShortEmaLength = _settingsViewModel.ShortEmaLength;
-            LongEmaLength = _settingsViewModel.LongEmaLength;
-            AtrPeriod = _settingsViewModel.AtrPeriod;
-            AtrSmaPeriod = _settingsViewModel.AtrSmaPeriod;
-            RsiPeriod = _settingsViewModel.RsiPeriod;
-            RsiDivergenceLookback = _settingsViewModel.RsiDivergenceLookback;
-            VolumeHistoryLength = _settingsViewModel.VolumeHistoryLength;
-            VolumeBurstMultiplier = _settingsViewModel.VolumeBurstMultiplier;
-            IvHistoryLength = _settingsViewModel.IvHistoryLength;
-            IvSpikeThreshold = _settingsViewModel.IvSpikeThreshold;
-            ObvMovingAveragePeriod = _settingsViewModel.ObvMovingAveragePeriod;
-            VwapUpperBandMultiplier = _settingsViewModel.VwapUpperBandMultiplier;
-            VwapLowerBandMultiplier = _settingsViewModel.VwapLowerBandMultiplier;
-
+            var result = _stateManager.GetResult(instrument.SecurityId);
+            _signalGenerationService.RunDailyBiasAnalysis(instrument, result);
+            OnAnalysisUpdated?.Invoke(result);
         }
+        #endregion
 
-        public List<Candle>? GetCandles(string securityId, TimeSpan timeframe)
-        {
-            if (_multiTimeframeCandles.TryGetValue(securityId, out var timeframes) &&
-                timeframes.TryGetValue(timeframe, out var candles))
-            {
-                return candles;
-            }
-            return null;
-        }
-
-        public void OnInstrumentDataReceived(DashboardInstrument instrument, decimal underlyingPrice)
-        {
-            if (string.IsNullOrEmpty(instrument.SecurityId)) return;
-
-            _instrumentCache[instrument.SecurityId] = instrument;
-
-            if (instrument.InstrumentType.StartsWith("OPT") && instrument.ImpliedVolatility > 0)
-            {
-                var ivKey = GetHistoricalIvKey(instrument, underlyingPrice);
-                if (!string.IsNullOrEmpty(ivKey))
-                {
-                    if (!_intradayIvStates.ContainsKey(ivKey))
-                    {
-                        _intradayIvStates[ivKey] = new IntradayIvState();
-                    }
-                    var ivState = _intradayIvStates[ivKey];
-
-                    ivState.DayHighIv = Math.Max(ivState.DayHighIv, instrument.ImpliedVolatility);
-                    ivState.DayLowIv = Math.Min(ivState.DayLowIv, instrument.ImpliedVolatility);
-
-                    _historicalIvService.RecordDailyIv(ivKey, ivState.DayHighIv, ivState.DayLowIv);
-
-                    var (ivRank, ivPercentile) = CalculateIvRankAndPercentile(instrument.ImpliedVolatility, ivKey, ivState);
-                    var ivTrendSignal = GetIvTrendSignal(ivPercentile, ivRank, ivState);
-
-                    if (_analysisResults.TryGetValue(instrument.SecurityId, out var existingResult))
-                    {
-                        existingResult.IvRank = ivRank;
-                        existingResult.IvPercentile = ivPercentile;
-                        existingResult.IvTrendSignal = ivTrendSignal;
-                    }
-                }
-            }
-
-            bool isNewInstrument = !_backfilledInstruments.Contains(instrument.SecurityId);
-            if (isNewInstrument)
-            {
-                _backfilledInstruments.Add(instrument.SecurityId);
-
-                _tickAnalysisState[instrument.SecurityId] = (0, 0, new List<decimal>());
-                _multiTimeframeCandles[instrument.SecurityId] = new Dictionary<TimeSpan, List<Candle>>();
-                _multiTimeframePriceEmaState[instrument.SecurityId] = new Dictionary<TimeSpan, EmaState>();
-                _multiTimeframeVwapEmaState[instrument.SecurityId] = new Dictionary<TimeSpan, EmaState>();
-                _multiTimeframeRsiState[instrument.SecurityId] = new Dictionary<TimeSpan, RsiState>();
-                _multiTimeframeAtrState[instrument.SecurityId] = new Dictionary<TimeSpan, AtrState>();
-                _multiTimeframeObvState[instrument.SecurityId] = new Dictionary<TimeSpan, ObvState>();
-
-                if (instrument.InstrumentType == "INDEX")
-                {
-                    _relativeStrengthStates[instrument.SecurityId] = new RelativeStrengthState();
-                    _ivSkewStates[instrument.SecurityId] = new IvSkewState();
-                }
-
-                _historicalMarketProfiles[instrument.SecurityId] = _marketProfileService.GetHistoricalProfiles(instrument.SecurityId);
-
-                if (!_marketProfiles.ContainsKey(instrument.SecurityId))
-                {
-                    decimal tickSize = GetTickSize(instrument);
-                    var startTime = DateTime.Today.Add(new TimeSpan(9, 15, 0));
-                    _marketProfiles[instrument.SecurityId] = new MarketProfile(tickSize, startTime);
-                }
-
-                foreach (var tf in _timeframes)
-                {
-                    var key = $"{instrument.SecurityId}_{tf.TotalMinutes}";
-                    var savedState = _indicatorStateService.GetState(key);
-
-                    var priceEmaState = new EmaState();
-                    var vwapEmaState = new EmaState();
-                    var rsiState = new RsiState();
-                    var atrState = new AtrState();
-                    var obvState = new ObvState();
-
-                    if (savedState != null)
-                    {
-                        // --- FIX: Removed the lines that tried to load non-existent EMA properties ---
-                        rsiState.AvgGain = savedState.LastRsiAvgGain;
-                        rsiState.AvgLoss = savedState.LastRsiAvgLoss;
-                        atrState.CurrentAtr = savedState.LastAtr;
-                        obvState.CurrentObv = savedState.LastObv;
-                        obvState.CurrentMovingAverage = savedState.LastObvMovingAverage;
-                        Debug.WriteLine($"[IndicatorWarmup] Loaded saved state for {key}");
-                    }
-
-                    _multiTimeframeCandles[instrument.SecurityId][tf] = new List<Candle>();
-                    _multiTimeframePriceEmaState[instrument.SecurityId][tf] = priceEmaState;
-                    _multiTimeframeVwapEmaState[instrument.SecurityId][tf] = vwapEmaState;
-                    _multiTimeframeRsiState[instrument.SecurityId][tf] = rsiState;
-                    _multiTimeframeAtrState[instrument.SecurityId][tf] = atrState;
-                    _multiTimeframeObvState[instrument.SecurityId][tf] = obvState;
-                }
-
-                if (instrument.SegmentId == 0)
-                {
-                    _customLevelStates[instrument.Symbol] = new IntradayIvState.CustomLevelState();
-                }
-
-                Task.Run(() => BackfillAndSavePreviousDayProfileAsync(instrument));
-                Task.Run(() => BackfillCurrentDayCandlesAsync(instrument));
-                RunDailyBiasAnalysis(instrument);
-            }
-
-            foreach (var timeframe in _timeframes)
-            {
-                AggregateIntoCandle(instrument, timeframe);
-            }
-        }
-
-        private string CalculateTrend(List<decimal> history, int period)
-        {
-            if (history.Count < period) return "Neutral";
-
-            var recentHistory = history.TakeLast(period).ToList();
-            var firstHalfAvg = recentHistory.Take(period / 2).DefaultIfEmpty(0).Average();
-            var secondHalfAvg = recentHistory.Skip(period / 2).DefaultIfEmpty(0).Average();
-
-            if (secondHalfAvg > firstHalfAvg * 1.0005m) return "Trending Up";
-            if (secondHalfAvg < firstHalfAvg * 0.9995m) return "Trending Down";
-            return "Neutral";
-        }
-
-        private string RunTier1InstitutionalIntentAnalysis(DashboardInstrument spotIndex)
-        {
-            if (!_relativeStrengthStates.ContainsKey(spotIndex.SecurityId)) return "Analyzing...";
-
-            var state = _relativeStrengthStates[spotIndex.SecurityId];
-
-            var future = _instrumentCache.Values.FirstOrDefault(i =>
-            {
-                if (!i.IsFuture || string.IsNullOrEmpty(i.UnderlyingSymbol))
-                    return false;
-
-                var futureUnderlying = i.UnderlyingSymbol.ToUpperInvariant();
-                var indexSymbol = spotIndex.Symbol;
-
-                if (indexSymbol == "Nifty 50" && futureUnderlying == "NIFTY") return true;
-                if (indexSymbol == "Nifty Bank" && futureUnderlying == "BANKNIFTY") return true;
-                if (indexSymbol == "Sensex" && futureUnderlying == "SENSEX") return true;
-
-                return indexSymbol.Replace(" ", "").ToUpperInvariant().Contains(futureUnderlying);
-            });
-
-            if (future == null || future.LTP == 0 || spotIndex.LTP == 0) return "Futures Not Found";
-
-            decimal basis = future.LTP - spotIndex.LTP;
-
-            state.BasisDeltaHistory.Add(basis);
-            if (state.BasisDeltaHistory.Count > 30)
-            {
-                state.BasisDeltaHistory.RemoveAt(0);
-            }
-
-            string basisTrend = CalculateTrend(state.BasisDeltaHistory, 30);
-
-            string confirmation = "";
-            var futureCandles = GetCandles(future.SecurityId, TimeSpan.FromMinutes(1));
-            if (futureCandles != null && futureCandles.Count > 1)
-            {
-                var (volSignal, _, _) = CalculateVolumeSignalForTimeframe(futureCandles);
-                var oiSignal = CalculateOiSignal(futureCandles);
-
-                if (basisTrend == "Trending Up")
-                {
-                    if (volSignal == "Volume Burst" && oiSignal == "Long Buildup")
-                        confirmation = " (Confirmed by Vol & OI)";
-                    else if (volSignal == "Volume Burst")
-                        confirmation = " (Confirmed by Vol)";
-                }
-                else if (basisTrend == "Trending Down")
-                {
-                    if (volSignal == "Volume Burst" && oiSignal == "Short Buildup")
-                        confirmation = " (Confirmed by Vol & OI)";
-                    else if (volSignal == "Volume Burst")
-                        confirmation = " (Confirmed by Vol)";
-                }
-            }
-
-            if (basisTrend == "Trending Up") return $"Bullish (Basis Strengthening){confirmation}";
-            if (basisTrend == "Trending Down") return $"Bearish (Basis Weakening){confirmation}";
-
-            return "Neutral";
-        }
-
-
-        private DateTime GetPreviousTradingDay(DateTime currentDate)
-        {
-            var date = currentDate.Date.AddDays(-1);
-            while (date.DayOfWeek == DayOfWeek.Saturday || date.DayOfWeek == DayOfWeek.Sunday || _settingsViewModel.MarketHolidays.Contains(date))
-            {
-                date = date.AddDays(-1);
-            }
-            return date;
-        }
-
-        private async Task BackfillAndSavePreviousDayProfileAsync(DashboardInstrument instrument)
-        {
-            if (instrument.InstrumentType != "INDEX" && instrument.InstrumentType != "FUTIDX")
-            {
-                Debug.WriteLine($"[BackfillPrevDay] Skipping for {instrument.DisplayName} because it is an {instrument.InstrumentType}.");
-                return;
-            }
-
-            var istZone = TimeZoneInfo.FindSystemTimeZoneById("India Standard Time");
-            var istNow = TimeZoneInfo.ConvertTimeFromUtc(DateTime.UtcNow, istZone);
-
-            DateTime dateToFetch = GetPreviousTradingDay(istNow);
-
-            if (_historicalMarketProfiles.GetValueOrDefault(instrument.SecurityId)?.Any(p => p.Date.Date == dateToFetch.Date) == true)
-            {
-                Debug.WriteLine($"[BackfillPrevDay] Profile for {instrument.DisplayName} on {dateToFetch:yyyy-MM-dd} already exists. Skipping fetch.");
-                return;
-            }
-
-            Debug.WriteLine($"[BackfillPrevDay] Starting backfill for {instrument.DisplayName} for date: {dateToFetch:yyyy-MM-dd}.");
-
-            try
-            {
-                var priceScripInfo = _scripMasterService.FindBySecurityIdAndType(instrument.SecurityId, instrument.InstrumentType);
-                if (priceScripInfo == null)
-                {
-                    Debug.WriteLine($"[BackfillPrevDay] FAILED: Could not find scrip info for price instrument {instrument.SecurityId}.");
-                    return;
-                }
-
-                var volumeScripInfo = priceScripInfo;
-
-                if (instrument.InstrumentType == "INDEX")
-                {
-                    Debug.WriteLine($"[BackfillPrevDay] {instrument.DisplayName} is an index. Finding corresponding future for volume data...");
-                    var futureForIndex = _scripMasterService.FindNearMonthFutureSecurityId(instrument.UnderlyingSymbol);
-                    if (futureForIndex != null)
-                    {
-                        volumeScripInfo = futureForIndex;
-                        Debug.WriteLine($"[BackfillPrevDay] Found future: {futureForIndex.SemInstrumentName} ({futureForIndex.SecurityId}) for volume.");
-                    }
-                    else
-                    {
-                        Debug.WriteLine($"[BackfillPrevDay] FAILED: Could not find a future contract for index {instrument.DisplayName}. Cannot build historical profile.");
-                        return;
-                    }
-                }
-
-                var priceHistoricalData = await _apiClient.GetIntradayHistoricalDataAsync(priceScripInfo, "1", dateToFetch);
-                var volumeHistoricalData = (priceScripInfo.SecurityId == volumeScripInfo.SecurityId)
-                    ? priceHistoricalData
-                    : await _apiClient.GetIntradayHistoricalDataAsync(volumeScripInfo, "1", dateToFetch);
-
-                if (priceHistoricalData?.Open == null || !priceHistoricalData.Open.Any() ||
-                    volumeHistoricalData?.Volume == null || !volumeHistoricalData.Volume.Any())
-                {
-                    Debug.WriteLine($"[BackfillPrevDay] No historical data points returned from API for {instrument.DisplayName} for date {dateToFetch:yyyy-MM-dd}.");
-                    return;
-                }
-
-                Debug.WriteLine($"[BackfillPrevDay] SUCCESS: Received {priceHistoricalData.Open.Count} price points and {volumeHistoricalData.Volume.Count} volume points.");
-
-                decimal tickSize = GetTickSize(instrument);
-                var sessionStartTime = dateToFetch.Date.Add(new TimeSpan(9, 15, 0));
-                var historicalProfile = new MarketProfile(tickSize, sessionStartTime);
-
-                int candleCount = Math.Min(priceHistoricalData.Open.Count, volumeHistoricalData.Volume.Count);
-
-                for (int i = 0; i < candleCount; i++)
-                {
-                    var priceCandle = new Candle
-                    {
-                        Timestamp = DateTimeOffset.FromUnixTimeSeconds((long)priceHistoricalData.StartTime[i]).UtcDateTime,
-                        Open = priceHistoricalData.Open[i],
-                        High = priceHistoricalData.High[i],
-                        Low = priceHistoricalData.Low[i],
-                        Close = priceHistoricalData.Close[i],
-                    };
-
-                    var volumeCandle = new Candle
-                    {
-                        Volume = (long)volumeHistoricalData.Volume[i],
-                        OpenInterest = volumeHistoricalData.OpenInterest.Count > i ? (long)volumeHistoricalData.OpenInterest[i] : 0,
-                    };
-
-                    UpdateMarketProfile(historicalProfile, priceCandle, volumeCandle);
-                }
-
-                CalculateDevelopingProfileLevels(historicalProfile);
-                var profileDataToSave = historicalProfile.ToMarketProfileData();
-                _marketProfileService.UpdateProfile(instrument.SecurityId, profileDataToSave);
-
-                Debug.WriteLine($"[BackfillPrevDay] Successfully built and saved historical market profile for {instrument.DisplayName} for {dateToFetch:yyyy-MM-dd}.");
-
-                if (!_historicalMarketProfiles.ContainsKey(instrument.SecurityId))
-                {
-                    _historicalMarketProfiles[instrument.SecurityId] = new List<MarketProfileData>();
-                }
-                _historicalMarketProfiles[instrument.SecurityId].RemoveAll(p => p.Date.Date == dateToFetch.Date);
-                _historicalMarketProfiles[instrument.SecurityId].Add(profileDataToSave);
-            }
-            catch (Exception ex)
-            {
-                Debug.WriteLine($"[BackfillPrevDay] UNEXPECTED ERROR during backfill for {instrument.DisplayName}: {ex.Message}");
-            }
-        }
-
+        #region Backfilling and Initialization Logic
         private async Task BackfillCurrentDayCandlesAsync(DashboardInstrument instrument)
         {
-            var istZone = TimeZoneInfo.FindSystemTimeZoneById("India Standard Time");
-            var istNow = TimeZoneInfo.ConvertTimeFromUtc(DateTime.UtcNow, istZone);
+            if (!IsMarketOpen()) return;
 
+            var istNow = TimeZoneInfo.ConvertTimeFromUtc(DateTime.UtcNow, TimeZoneInfo.FindSystemTimeZoneById("India Standard Time"));
             if (istNow.TimeOfDay < new TimeSpan(9, 15, 0)) return;
-
-            Debug.WriteLine($"[BackfillCurrentDay] App started mid-day. Backfilling today's candles for {instrument.DisplayName}.");
 
             try
             {
-                var priceScripInfo = _scripMasterService.FindBySecurityIdAndType(instrument.SecurityId, instrument.InstrumentType);
+                var priceScripInfo = _scripMasterService.FindBySecurityId(instrument.SecurityId);
                 if (priceScripInfo == null) return;
 
-                var volumeScripInfo = priceScripInfo;
-                if (instrument.InstrumentType == "INDEX")
-                {
-                    var futureForIndex = _scripMasterService.FindNearMonthFutureSecurityId(instrument.UnderlyingSymbol);
-                    if (futureForIndex != null)
-                    {
-                        volumeScripInfo = futureForIndex;
-                    }
-                    else
-                    {
-                        Debug.WriteLine($"[BackfillCurrentDay] FAILED: Could not find a future for index {instrument.DisplayName}.");
-                        return;
-                    }
-                }
-
-                var priceHistoricalData = await _apiClient.GetIntradayHistoricalDataAsync(priceScripInfo, "1", istNow.Date);
-                var volumeHistoricalData = (priceScripInfo.SecurityId == volumeScripInfo.SecurityId)
-                    ? priceHistoricalData
-                    : await _apiClient.GetIntradayHistoricalDataAsync(volumeScripInfo, "1", istNow.Date);
-
-                if (priceHistoricalData?.Open == null || !priceHistoricalData.Open.Any() ||
-                    volumeHistoricalData?.Volume == null || !volumeHistoricalData.Volume.Any())
-                {
-                    Debug.WriteLine($"[BackfillCurrentDay] No historical data points for {instrument.DisplayName}.");
-                    return;
-                }
+                var historicalData = await _apiClient.GetIntradayHistoricalDataAsync(priceScripInfo, "1", istNow.Date);
+                if (historicalData?.Open == null || !historicalData.Open.Any()) return;
 
                 var candles = new List<Candle>();
-                int candleCount = Math.Min(priceHistoricalData.Open.Count, volumeHistoricalData.Volume.Count);
-
-                if (_marketProfiles.TryGetValue(instrument.SecurityId, out var liveProfile))
+                for (int i = 0; i < historicalData.Open.Count; i++)
                 {
-                    for (int i = 0; i < candleCount; i++)
-                    {
-                        var priceCandle = new Candle
-                        {
-                            Timestamp = DateTimeOffset.FromUnixTimeSeconds((long)priceHistoricalData.StartTime[i]).UtcDateTime,
-                            Open = priceHistoricalData.Open[i],
-                            High = priceHistoricalData.High[i],
-                            Low = priceHistoricalData.Low[i],
-                            Close = priceHistoricalData.Close[i],
-                        };
-
-                        var volumeCandle = new Candle
-                        {
-                            Volume = (long)volumeHistoricalData.Volume[i],
-                            OpenInterest = volumeHistoricalData.OpenInterest.Count > i ? (long)volumeHistoricalData.OpenInterest[i] : 0,
-                        };
-
-                        UpdateMarketProfile(liveProfile, priceCandle, volumeCandle);
-
-                        priceCandle.Volume = volumeCandle.Volume;
-                        priceCandle.OpenInterest = volumeCandle.OpenInterest;
-                        candles.Add(priceCandle);
-                    }
-
-                    CalculateDevelopingProfileLevels(liveProfile);
+                    var candle = new Candle { Timestamp = DateTimeOffset.FromUnixTimeSeconds((long)historicalData.StartTime[i]).UtcDateTime, Open = historicalData.Open[i], High = historicalData.High[i], Low = historicalData.Low[i], Close = historicalData.Close[i], Volume = (long)historicalData.Volume[i], OpenInterest = (long)historicalData.OpenInterest[i] };
+                    candles.Add(candle);
                 }
 
-                foreach (var timeframe in _timeframes)
+                var timeframes = new[] { TimeSpan.FromMinutes(1), TimeSpan.FromMinutes(5), TimeSpan.FromMinutes(15) };
+                foreach (var timeframe in timeframes)
                 {
-                    var aggregatedCandles = AggregateHistoricalCandles(candles, timeframe);
-                    _multiTimeframeCandles[instrument.SecurityId][timeframe] = aggregatedCandles;
-                    WarmupIndicators(instrument.SecurityId, timeframe);
+                    _stateManager.MultiTimeframeCandles[instrument.SecurityId][timeframe] = AggregateHistoricalCandles(candles, timeframe);
+                    _indicatorService.WarmupIndicators(instrument.SecurityId, timeframe, _settingsViewModel.ShortEmaLength, _settingsViewModel.LongEmaLength);
                 }
             }
             catch (Exception ex)
@@ -581,1758 +273,132 @@ namespace TradingConsole.Wpf.Services
             }
         }
 
-        #region Market Profile (TPO) and Volume Profile Calculation
-
-        private void UpdateMarketProfile(MarketProfile profile, Candle priceCandle, Candle volumeCandle)
+        private async Task BackfillAndSavePreviousDayProfileAsync(DashboardInstrument instrument)
         {
-            profile.UpdateInitialBalance(priceCandle);
-            var tpoPeriod = profile.GetTpoPeriod(priceCandle.Timestamp);
+            if (instrument.InstrumentType != "INDEX" && instrument.InstrumentType != "FUTIDX") return;
 
-            for (decimal price = priceCandle.Low; price <= priceCandle.High; price += profile.TickSize)
+            var istNow = TimeZoneInfo.ConvertTimeFromUtc(DateTime.UtcNow, TimeZoneInfo.FindSystemTimeZoneById("India Standard Time"));
+            DateTime dateToFetch = GetPreviousTradingDay(istNow);
+
+            if (_stateManager.HistoricalMarketProfiles.GetValueOrDefault(instrument.SecurityId)?.Any(p => p.Date.Date == dateToFetch.Date) == true) return;
+
+            try
             {
-                var quantizedPrice = profile.QuantizePrice(price);
-                if (!profile.TpoLevels.ContainsKey(quantizedPrice))
+                var priceScripInfo = _scripMasterService.FindBySecurityId(instrument.SecurityId);
+                if (priceScripInfo == null) return;
+
+                var historicalData = await _apiClient.GetIntradayHistoricalDataAsync(priceScripInfo, "1", dateToFetch);
+                if (historicalData?.Open == null || !historicalData.Open.Any()) return;
+
+                decimal tickSize = _signalGenerationService.GetTickSize(instrument);
+                var sessionStartTime = dateToFetch.Date.Add(new TimeSpan(9, 15, 0));
+                var historicalProfile = new MarketProfile(tickSize, sessionStartTime);
+
+                for (int i = 0; i < historicalData.Open.Count; i++)
                 {
-                    profile.TpoLevels[quantizedPrice] = new List<char>();
+                    var priceCandle = new Candle { Timestamp = DateTimeOffset.FromUnixTimeSeconds((long)historicalData.StartTime[i]).UtcDateTime, Open = historicalData.Open[i], High = historicalData.High[i], Low = historicalData.Low[i], Close = historicalData.Close[i] };
+                    var volumeCandle = new Candle { Volume = (long)historicalData.Volume[i] };
+                    _signalGenerationService.UpdateMarketProfile(historicalProfile, priceCandle, volumeCandle);
                 }
-                if (!profile.TpoLevels[quantizedPrice].Contains(tpoPeriod))
+
+                var profileDataToSave = historicalProfile.ToMarketProfileData();
+                _marketProfileService.UpdateProfile(instrument.SecurityId, profileDataToSave);
+
+                if (!_stateManager.HistoricalMarketProfiles.ContainsKey(instrument.SecurityId))
                 {
-                    profile.TpoLevels[quantizedPrice].Add(tpoPeriod);
+                    _stateManager.HistoricalMarketProfiles[instrument.SecurityId] = new List<MarketProfileData>();
                 }
+                _stateManager.HistoricalMarketProfiles[instrument.SecurityId].Add(profileDataToSave);
             }
-
-            var typicalPrice = (priceCandle.High + priceCandle.Low + priceCandle.Close) / 3;
-            var typicalPriceQuantized = profile.QuantizePrice(typicalPrice);
-            if (!profile.VolumeLevels.ContainsKey(typicalPriceQuantized))
+            catch (Exception ex)
             {
-                profile.VolumeLevels[typicalPriceQuantized] = 0;
-            }
-            profile.VolumeLevels[typicalPriceQuantized] += volumeCandle.Volume;
-        }
-
-        private void UpdateMarketProfile(string securityId, Candle candle)
-        {
-            if (!_marketProfiles.TryGetValue(securityId, out var profile))
-            {
-                return;
-            }
-            UpdateMarketProfile(profile, candle, candle); // Overload for non-hybrid instruments
-            CalculateDevelopingProfileLevels(profile);
-        }
-
-        private void CalculateDevelopingProfileLevels(MarketProfile profile)
-        {
-            if (profile.TpoLevels.Count == 0) return;
-
-            var pocLevel = profile.TpoLevels
-                .OrderByDescending(kvp => kvp.Value.Count)
-                .ThenBy(kvp => Math.Abs(kvp.Key - profile.DevelopingTpoLevels.PointOfControl))
-                .FirstOrDefault();
-
-            if (pocLevel.Key == 0) return;
-
-            profile.DevelopingTpoLevels.PointOfControl = pocLevel.Key;
-
-            long totalTpos = profile.TpoLevels.Sum(kvp => kvp.Value.Count);
-            long tposInVaTarget = (long)(totalTpos * 0.70);
-
-            var valueAreaLevels = new List<KeyValuePair<decimal, List<char>>> { pocLevel };
-            long tposInVaCurrent = pocLevel.Value.Count;
-
-            var levelsAbovePoc = profile.TpoLevels.Where(kvp => kvp.Key > pocLevel.Key).OrderBy(kvp => kvp.Key).ToList();
-            var levelsBelowPoc = profile.TpoLevels.Where(kvp => kvp.Key < pocLevel.Key).OrderByDescending(kvp => kvp.Key).ToList();
-
-            int aboveIndex = 0;
-            int belowIndex = 0;
-
-            while (tposInVaCurrent < tposInVaTarget && (aboveIndex < levelsAbovePoc.Count || belowIndex < levelsBelowPoc.Count))
-            {
-                long tpoCountAbove = (aboveIndex < levelsAbovePoc.Count) ? levelsAbovePoc[aboveIndex].Value.Count : 0;
-                long tpoCountBelow = (belowIndex < levelsBelowPoc.Count) ? levelsBelowPoc[belowIndex].Value.Count : 0;
-
-                if (tpoCountAbove > tpoCountBelow)
-                {
-                    valueAreaLevels.Add(levelsAbovePoc[aboveIndex]);
-                    tposInVaCurrent += tpoCountAbove;
-                    aboveIndex++;
-                }
-                else if (tpoCountBelow > 0)
-                {
-                    valueAreaLevels.Add(levelsBelowPoc[belowIndex]);
-                    tposInVaCurrent += tpoCountBelow;
-                    belowIndex++;
-                }
-                else
-                {
-                    break;
-                }
-            }
-
-            if (valueAreaLevels.Any())
-            {
-                profile.DevelopingTpoLevels.ValueAreaHigh = valueAreaLevels.Max(kvp => kvp.Key);
-                profile.DevelopingTpoLevels.ValueAreaLow = valueAreaLevels.Min(kvp => kvp.Key);
-            }
-
-            if (profile.VolumeLevels.Count == 0) return;
-
-            var vpocLevel = profile.VolumeLevels
-                .OrderByDescending(kvp => kvp.Value)
-                .ThenBy(kvp => kvp.Key)
-                .FirstOrDefault();
-
-            if (vpocLevel.Key != 0)
-            {
-                profile.DevelopingVolumeProfile.VolumePoc = vpocLevel.Key;
+                Debug.WriteLine($"[BackfillPrevDay] UNEXPECTED ERROR: {ex.Message}");
             }
         }
 
-        public void RunDailyBiasAnalysis(DashboardInstrument instrument)
+        private DateTime GetPreviousTradingDay(DateTime currentDate)
         {
-            if (!_historicalMarketProfiles.TryGetValue(instrument.SecurityId, out var profiles) || profiles.Count < 2)
+            var date = currentDate.Date.AddDays(-1);
+            while (date.DayOfWeek == DayOfWeek.Saturday || date.DayOfWeek == DayOfWeek.Sunday || _settingsViewModel.MarketHolidays.Contains(date.Date))
             {
-                if (_analysisResults.TryGetValue(instrument.SecurityId, out var result))
-                {
-                    result.DailyBias = "Insufficient History";
-                }
-                return;
+                date = date.AddDays(-1);
             }
-
-            var recentProfiles = profiles.OrderByDescending(p => p.Date).Take(8).ToList();
-            var previousDay = recentProfiles.FirstOrDefault(p => p.Date.Date < DateTime.Today);
-            if (previousDay == null) return;
-
-            string structure = AnalyzeMarketStructure(recentProfiles);
-            string openingBias = AnalyzeOpeningCondition(instrument.Open, previousDay);
-            string finalBias = SynthesizeBias(structure, openingBias);
-
-            if (_analysisResults.TryGetValue(instrument.SecurityId, out var analysisResult))
-            {
-                analysisResult.MarketStructure = structure;
-                analysisResult.DailyBias = finalBias;
-                OnAnalysisUpdated?.Invoke(analysisResult);
-            }
-        }
-
-        private string AnalyzeMarketStructure(List<MarketProfileData> profiles)
-        {
-            if (profiles.Count < 3) return "Building";
-
-            var lastThreeDays = profiles.Take(3).ToList();
-            var day1 = lastThreeDays[0];
-            var day2 = lastThreeDays[1];
-            var day3 = lastThreeDays[2];
-
-            bool isTrendingUp = day1.TpoLevelsInfo.ValueAreaLow > day2.TpoLevelsInfo.ValueAreaLow &&
-                                day2.TpoLevelsInfo.ValueAreaLow > day3.TpoLevelsInfo.ValueAreaLow;
-
-            bool isTrendingDown = day1.TpoLevelsInfo.ValueAreaHigh < day2.TpoLevelsInfo.ValueAreaHigh &&
-                                  day2.TpoLevelsInfo.ValueAreaHigh < day3.TpoLevelsInfo.ValueAreaHigh;
-
-            if (isTrendingUp) return "Trending Up";
-            if (isTrendingDown) return "Trending Down";
-
-            bool isOverlapping = (day1.TpoLevelsInfo.ValueAreaHigh >= day2.TpoLevelsInfo.ValueAreaLow) &&
-                                 (day1.TpoLevelsInfo.ValueAreaLow <= day2.TpoLevelsInfo.ValueAreaHigh);
-
-            if (isOverlapping) return "Balancing";
-
-            return "Transitioning";
-        }
-
-        private string AnalyzeOpeningCondition(decimal openPrice, MarketProfileData previousDay)
-        {
-            if (openPrice == 0) return "Awaiting Open";
-
-            var prevVAH = previousDay.TpoLevelsInfo.ValueAreaHigh;
-            var prevVAL = previousDay.TpoLevelsInfo.ValueAreaLow;
-            var prevPOC = previousDay.TpoLevelsInfo.PointOfControl;
-
-            if (openPrice > prevVAH) return "Opening Above Value";
-            if (openPrice < prevVAL) return "Opening Below Value";
-            if (openPrice > prevPOC) return "Opening Inside Value (High)";
-            if (openPrice < prevPOC) return "Opening Inside Value (Low)";
-
-            return "Opening at POC";
-        }
-
-        private string SynthesizeBias(string structure, string opening)
-        {
-            if (opening == "Awaiting Open") return "Awaiting Open";
-
-            if (structure == "Trending Up" && opening == "Opening Above Value") return "Strong Bullish";
-            if (structure == "Trending Down" && opening == "Opening Below Value") return "Strong Bearish";
-            if (structure == "Trending Up" && opening.Contains("Inside Value")) return "Bullish Rotational";
-            if (structure == "Trending Down" && opening.Contains("Inside Value")) return "Bearish Rotational";
-            if (structure == "Balancing" && opening == "Opening Above Value") return "Bullish Breakout Watch";
-            if (structure == "Balancing" && opening == "Opening Below Value") return "Bearish Breakout Watch";
-            if (structure == "Balancing" && opening.Contains("Inside Value")) return "Pure Rotational";
-
-            return "Neutral";
-        }
-
-        private string AnalyzeOpenType(DashboardInstrument instrument, List<Candle> oneMinCandles)
-        {
-            if (oneMinCandles.Count < 3) return "Analyzing Open...";
-
-            var firstCandle = oneMinCandles[0];
-            bool isFirstCandleStrong = Math.Abs(firstCandle.Close - firstCandle.Open) > (firstCandle.High - firstCandle.Low) * 0.7m;
-
-            if (isFirstCandleStrong && firstCandle.Close > firstCandle.Open && oneMinCandles[1].Low > firstCandle.Low && oneMinCandles[2].Low > firstCandle.Low)
-            {
-                return "Open-Drive (Bullish)";
-            }
-            if (isFirstCandleStrong && firstCandle.Close < firstCandle.Open && oneMinCandles[1].High < firstCandle.High && oneMinCandles[2].High < firstCandle.High)
-            {
-                return "Open-Drive (Bearish)";
-            }
-
-            if (firstCandle.Low < instrument.Open && firstCandle.Close > instrument.Open && isFirstCandleStrong)
-            {
-                return "Open-Test-Drive (Bullish)";
-            }
-            if (firstCandle.High > instrument.Open && firstCandle.Close < instrument.Open && isFirstCandleStrong)
-            {
-                return "Open-Test-Drive (Bearish)";
-            }
-
-            var thirdCandle = oneMinCandles[2];
-            if (firstCandle.Close > firstCandle.Open && thirdCandle.Close < firstCandle.Open)
-            {
-                return "Open-Rejection-Reverse (Bearish)";
-            }
-            if (firstCandle.Close < firstCandle.Open && thirdCandle.Close > firstCandle.Open)
-            {
-                return "Open-Rejection-Reverse (Bullish)";
-            }
-
-            return "Open-Auction (Rotational)";
-        }
-
-        private string AnalyzePriceRelativeToYesterdayProfile(decimal ltp, MarketProfileData? previousDay)
-        {
-            if (previousDay == null || ltp == 0) return "N/A";
-
-            var prevVAH = previousDay.TpoLevelsInfo.ValueAreaHigh;
-            var prevVAL = previousDay.TpoLevelsInfo.ValueAreaLow;
-            var prevPOC = previousDay.TpoLevelsInfo.PointOfControl;
-
-            if (ltp > prevVAH) return "Trading Above Y-VAH";
-            if (ltp < prevVAL) return "Trading Below Y-VAL";
-            if (ltp > prevPOC) return "Trading in Upper Y-Value";
-            if (ltp < prevPOC) return "Trading in Lower Y-Value";
-
-            return "Trading at Y-POC";
-        }
-
-
-        private void RunMarketProfileAnalysis(DashboardInstrument instrument, MarketProfile currentProfile, AnalysisResult result)
-        {
-            var previousDayProfile = _historicalMarketProfiles.GetValueOrDefault(instrument.SecurityId)?.FirstOrDefault(p => p.Date.Date < DateTime.Today.Date);
-            if (previousDayProfile == null)
-            {
-                result.MarketProfileSignal = "Awaiting Previous Day Data";
-                return;
-            }
-
-            var ltp = instrument.LTP;
-            var prevVAH = previousDayProfile.TpoLevelsInfo.ValueAreaHigh;
-            var prevVAL = previousDayProfile.TpoLevelsInfo.ValueAreaLow;
-            var currentVAH = currentProfile.DevelopingTpoLevels.ValueAreaHigh;
-            var currentVAL = currentProfile.DevelopingTpoLevels.ValueAreaLow;
-
-            // True Acceptance (Highest Conviction)
-            if (currentVAL > prevVAH) { result.MarketProfileSignal = "True Acceptance Above Y-VAH"; return; }
-            if (currentVAH < prevVAL) { result.MarketProfileSignal = "True Acceptance Below Y-VAL"; return; }
-
-            // Look Above/Below and Fail (Strong Reversal)
-            var oneMinCandles = GetCandles(instrument.SecurityId, TimeSpan.FromMinutes(1));
-            if (oneMinCandles != null && oneMinCandles.Count > 2)
-            {
-                var lastCandle = oneMinCandles.Last();
-                var secondLastCandle = oneMinCandles[^2];
-
-                if (secondLastCandle.High > prevVAH && lastCandle.Close < prevVAH) { result.MarketProfileSignal = "Look Above and Fail at Y-VAH"; return; }
-                if (secondLastCandle.Low < prevVAL && lastCandle.Close > prevVAL) { result.MarketProfileSignal = "Look Below and Fail at Y-VAL"; return; }
-            }
-
-            // Initiative Buying/Selling (Medium Conviction)
-            if (ltp > prevVAH) { result.MarketProfileSignal = "Initiative Buying Above Y-VAH"; return; }
-            if (ltp < prevVAL) { result.MarketProfileSignal = "Initiative Selling Below Y-VAL"; return; }
-
-            result.MarketProfileSignal = "Trading Inside Y-Value";
-        }
-
-        private string GetInitialBalanceSignal(decimal ltp, MarketProfile profile, string securityId)
-        {
-            if (!profile.IsInitialBalanceSet)
-            {
-                return "IB Forming";
-            }
-
-            if (!_initialBalanceState.ContainsKey(securityId))
-            {
-                _initialBalanceState[securityId] = (false, false);
-            }
-
-            var (isBreakout, isBreakdown) = _initialBalanceState[securityId];
-
-            if (ltp > profile.InitialBalanceHigh && !isBreakout)
-            {
-                _initialBalanceState[securityId] = (true, false);
-                return "IB Breakout";
-            }
-
-            if (ltp < profile.InitialBalanceLow && !isBreakdown)
-            {
-                _initialBalanceState[securityId] = (false, true);
-                return "IB Breakdown";
-            }
-
-            if (ltp > profile.InitialBalanceHigh && isBreakout) return "IB Extension Up";
-            if (ltp < profile.InitialBalanceLow && isBreakdown) return "IB Extension Down";
-
-            if (ltp <= profile.InitialBalanceHigh && isBreakout)
-            {
-                _initialBalanceState[securityId] = (false, false);
-                return "IB Failed Breakout";
-            }
-
-            if (ltp >= profile.InitialBalanceLow && isBreakdown)
-            {
-                _initialBalanceState[securityId] = (false, false);
-                return "IB Failed Breakdown";
-            }
-
-            return "Inside IB";
-        }
-
-
-        private string GetBaseMarketSignal(decimal ltp, MarketProfile profile)
-        {
-            var tpoInfo = profile.DevelopingTpoLevels;
-            var volumeInfo = profile.DevelopingVolumeProfile;
-            decimal tolerance = ltp * 0.0002m;
-
-            var vahUpperBand = tpoInfo.ValueAreaHigh + tolerance;
-            var vahLowerBand = tpoInfo.ValueAreaHigh - tolerance;
-            var valUpperBand = tpoInfo.ValueAreaLow + tolerance;
-            var valLowerBand = tpoInfo.ValueAreaLow - tolerance;
-            var pocUpperBand = tpoInfo.PointOfControl + tolerance;
-            var pocLowerBand = tpoInfo.PointOfControl - tolerance;
-            var vpocUpperBand = volumeInfo.VolumePoc + tolerance;
-            var vpocLowerBand = volumeInfo.VolumePoc - tolerance;
-
-            if (ltp > vahUpperBand) return "Breakout above value";
-            if (ltp < valLowerBand) return "Breakdown below value";
-            if (ltp >= vahLowerBand && ltp <= vahUpperBand) return "At dVAH Band";
-            if (ltp >= valLowerBand && ltp <= valUpperBand) return "At dVAL Band";
-
-            bool inPocBand = ltp >= pocLowerBand && ltp <= pocUpperBand;
-            bool inVpocBand = volumeInfo.VolumePoc > 0 && (ltp >= vpocLowerBand && ltp <= vpocUpperBand);
-
-            if (inPocBand && inVpocBand) return "At dPOC & dVPOC - High conviction";
-            if (inPocBand) return "At dPOC Band";
-            if (inVpocBand) return "At dVPOC Band";
-
-            return "Inside Value Area";
-        }
-
-        private decimal GetTickSize(DashboardInstrument? instrument)
-        {
-            if (instrument?.InstrumentType == "INDEX")
-            {
-                return 1.0m;
-            }
-            return 0.05m;
-        }
-
-        #endregion
-
-        private string GetHistoricalIvKey(DashboardInstrument instrument, decimal underlyingPrice)
-        {
-            if (string.IsNullOrEmpty(instrument.UnderlyingSymbol)) return string.Empty;
-
-            var scripInfo = _scripMasterService.FindBySecurityId(instrument.SecurityId);
-            if (scripInfo == null || scripInfo.StrikePrice <= 0) return string.Empty;
-
-            int strikeDistance = (int)Math.Round((scripInfo.StrikePrice - underlyingPrice) / 50);
-            string moneyness;
-            if (strikeDistance == 0) moneyness = "ATM";
-            else if (strikeDistance > 0) moneyness = $"ATM+{strikeDistance}";
-            else moneyness = $"ATM{strikeDistance}";
-
-            return $"{instrument.UnderlyingSymbol}_{moneyness}_{scripInfo.OptionType}";
-        }
-
-        private (decimal ivRank, decimal ivPercentile) CalculateIvRankAndPercentile(decimal currentIv, string key, IntradayIvState ivState)
-        {
-            decimal dayRange = ivState.DayHighIv - ivState.DayLowIv;
-            decimal ivPercentile = (dayRange > 0) ? (currentIv - ivState.DayLowIv) / dayRange * 100 : 0;
-
-            var (histHigh, histLow) = _historicalIvService.Get90DayIvRange(key);
-            decimal histRange = histHigh - histLow;
-            decimal ivRank = (histRange > 0) ? (currentIv - histLow) / histRange * 100 : 0;
-
-            return (Math.Round(ivRank, 2), Math.Round(ivPercentile, 2));
-        }
-
-        private string GetIvTrendSignal(decimal ivp, decimal ivr, IntradayIvState state)
-        {
-            state.IvPercentileHistory.Add(ivp);
-            if (state.IvPercentileHistory.Count > 10)
-            {
-                state.IvPercentileHistory.RemoveAt(0);
-            }
-
-            if (state.IvPercentileHistory.Count < 5)
-            {
-                return "Building History...";
-            }
-
-            var recentIVP = state.IvPercentileHistory.Last();
-            var previousIVP = state.IvPercentileHistory[^2];
-            var fivePeriodAvgIVP = state.IvPercentileHistory.TakeLast(5).Average();
-            var tenPeriodAvgIVP = state.IvPercentileHistory.Average();
-
-            if (recentIVP > previousIVP + 15 && recentIVP > 60) return "IV Spike Up";
-            if (recentIVP < previousIVP - 15 && recentIVP < 40) return "IV Contraction";
-            if (ivr > 85 && recentIVP < fivePeriodAvgIVP && recentIVP < tenPeriodAvgIVP) return "IV Crush Warning";
-            if (ivr < 60 && recentIVP > fivePeriodAvgIVP && previousIVP < tenPeriodAvgIVP) return "IV Rising (Momentum)";
-            if (ivr < 20 && ivp < 20) return "IV Low & Stable";
-
-            return "Neutral";
+            return date;
         }
 
         private List<Candle> AggregateHistoricalCandles(List<Candle> minuteCandles, TimeSpan timeframe)
         {
             return minuteCandles
                 .GroupBy(c => new DateTime(c.Timestamp.Ticks - (c.Timestamp.Ticks % timeframe.Ticks), DateTimeKind.Utc))
-                .Select(g => new Candle
-                {
-                    Timestamp = g.Key,
-                    Open = g.First().Open,
-                    High = g.Max(c => c.High),
-                    Low = g.Min(c => c.Low),
-                    Close = g.Last().Close,
-                    Volume = g.Sum(c => c.Volume),
-                    OpenInterest = g.Last().OpenInterest,
-                    Vwap = g.Sum(c => c.Close * c.Volume) / (g.Sum(c => c.Volume) == 0 ? 1 : g.Sum(c => c.Volume))
-                })
+                .Select(g => new Candle { Timestamp = g.Key, Open = g.First().Open, High = g.Max(c => c.High), Low = g.Min(c => c.Low), Close = g.Last().Close, Volume = g.Sum(c => c.Volume), OpenInterest = g.Last().OpenInterest })
                 .ToList();
         }
 
-        private void AggregateIntoCandle(DashboardInstrument instrument, TimeSpan timeframe)
+        private void LoadIndicatorStateFromStorage(string securityId)
         {
-            if (!_multiTimeframeCandles.ContainsKey(instrument.SecurityId) || !_multiTimeframeCandles[instrument.SecurityId].ContainsKey(timeframe))
+            var timeframes = new[] { TimeSpan.FromMinutes(1), TimeSpan.FromMinutes(5), TimeSpan.FromMinutes(15) };
+            foreach (var tf in timeframes)
             {
-                return;
-            }
-
-            var candles = _multiTimeframeCandles[instrument.SecurityId][timeframe];
-            var now = DateTime.UtcNow;
-            var candleTimestamp = new DateTime(now.Ticks - (now.Ticks % timeframe.Ticks), now.Kind);
-
-            var currentCandle = candles.LastOrDefault();
-
-            if (currentCandle == null || currentCandle.Timestamp != candleTimestamp)
-            {
-                var lastClosedCandle = currentCandle;
-
-                var newCandle = new Candle
+                var key = $"{securityId}_{tf.TotalMinutes}";
+                var savedState = _indicatorStateService.GetState(key);
+                if (savedState != null)
                 {
-                    Timestamp = candleTimestamp,
-                    Open = instrument.LTP,
-                    High = instrument.LTP,
-                    Low = instrument.LTP,
-                    Close = instrument.LTP,
-                    Volume = instrument.LastTradedQuantity,
-                    OpenInterest = (long)instrument.OpenInterest,
-                    CumulativePriceVolume = instrument.AvgTradePrice * instrument.LastTradedQuantity,
-                    CumulativeVolume = instrument.LastTradedQuantity,
-                    Vwap = instrument.AvgTradePrice
-                };
-                candles.Add(newCandle);
-
-                if (lastClosedCandle != null)
-                {
-                    if (timeframe.TotalMinutes == 1)
-                    {
-                        if (instrument.InstrumentType == "FUTIDX")
-                        {
-                            var underlyingIndex = _instrumentCache.Values.FirstOrDefault(i => i.InstrumentType == "INDEX" && i.Symbol == instrument.UnderlyingSymbol);
-                            if (underlyingIndex != null)
-                            {
-                                var indexCandles = GetCandles(underlyingIndex.SecurityId, TimeSpan.FromMinutes(1));
-                                var matchingIndexCandle = indexCandles?.FirstOrDefault(c => c.Timestamp == lastClosedCandle.Timestamp);
-                                if (matchingIndexCandle != null && _marketProfiles.TryGetValue(underlyingIndex.SecurityId, out var profile))
-                                {
-                                    UpdateMarketProfile(profile, matchingIndexCandle, lastClosedCandle);
-                                    CalculateDevelopingProfileLevels(profile);
-                                }
-                            }
-                        }
-                        else if (instrument.InstrumentType != "INDEX")
-                        {
-                            UpdateMarketProfile(instrument.SecurityId, lastClosedCandle);
-                        }
-                    }
-                    RunComplexAnalysis(instrument);
+                    _stateManager.MultiTimeframeRsiState[securityId][tf].AvgGain = savedState.LastRsiAvgGain;
+                    _stateManager.MultiTimeframeRsiState[securityId][tf].AvgLoss = savedState.LastRsiAvgLoss;
+                    _stateManager.MultiTimeframeAtrState[securityId][tf].CurrentAtr = savedState.LastAtr;
+                    _stateManager.MultiTimeframeObvState[securityId][tf].CurrentObv = savedState.LastObv;
+                    _stateManager.MultiTimeframeObvState[securityId][tf].CurrentMovingAverage = savedState.LastObvMovingAverage;
                 }
-
-                CandleUpdated?.Invoke(instrument.SecurityId, newCandle, timeframe);
-            }
-            else
-            {
-                currentCandle.High = Math.Max(currentCandle.High, instrument.LTP);
-                currentCandle.Low = Math.Min(currentCandle.Low, instrument.LTP);
-                currentCandle.Close = instrument.LTP;
-                currentCandle.Volume += instrument.LastTradedQuantity;
-                currentCandle.OpenInterest = (long)instrument.OpenInterest;
-                currentCandle.CumulativePriceVolume += instrument.AvgTradePrice * instrument.LastTradedQuantity;
-                currentCandle.CumulativeVolume += instrument.LastTradedQuantity;
-                currentCandle.Vwap = (currentCandle.CumulativeVolume > 0)
-                    ? currentCandle.CumulativePriceVolume / currentCandle.CumulativeVolume
-                    : currentCandle.Close;
-
-                CandleUpdated?.Invoke(instrument.SecurityId, currentCandle, timeframe);
             }
         }
 
-        private void RunComplexAnalysis(DashboardInstrument instrument)
+        private DashboardInstrument GetInstrumentForVolumeAnalysis(DashboardInstrument instrument)
         {
-            if (!_analysisResults.TryGetValue(instrument.SecurityId, out var result))
-            {
-                result = new AnalysisResult { SecurityId = instrument.SecurityId };
-                _analysisResults[instrument.SecurityId] = result;
-            }
-
-            // --- NEW: Calculate PriceChange and PriceChangePercent here ---
-            result.PriceChange = instrument.LTP - instrument.Close;
-            result.PriceChangePercent = (instrument.Close > 0) ? (result.PriceChange / instrument.Close) : 0;
-
-
-            DashboardInstrument instrumentForAnalysis = instrument;
-            // For VWAP and volume-based indicators, always use the future if the current instrument is an index.
             if (instrument.InstrumentType == "INDEX")
             {
                 var future = _instrumentCache.Values.FirstOrDefault(i => i.IsFuture && i.UnderlyingSymbol == instrument.Symbol);
-                if (future != null)
-                {
-                    instrumentForAnalysis = future;
-                }
+                if (future != null) return future;
             }
-
-            var tickState = _tickAnalysisState[instrumentForAnalysis.SecurityId];
-            tickState.cumulativePriceVolume += instrumentForAnalysis.AvgTradePrice * instrumentForAnalysis.LastTradedQuantity;
-            tickState.cumulativeVolume += instrumentForAnalysis.LastTradedQuantity;
-            decimal dayVwap = (tickState.cumulativeVolume > 0) ? tickState.cumulativePriceVolume / tickState.cumulativeVolume : 0;
-
-            if (instrument.ImpliedVolatility > 0) tickState.ivHistory.Add(instrument.ImpliedVolatility);
-            if (tickState.ivHistory.Count > this.IvHistoryLength) tickState.ivHistory.RemoveAt(0);
-            var (avgIv, ivSignal) = CalculateIvSignal(instrument.ImpliedVolatility, tickState.ivHistory);
-
-            _tickAnalysisState[instrumentForAnalysis.SecurityId] = tickState;
-
-            var oneMinCandles = _multiTimeframeCandles[instrumentForAnalysis.SecurityId].GetValueOrDefault(TimeSpan.FromMinutes(1));
-            var fiveMinCandles = _multiTimeframeCandles[instrumentForAnalysis.SecurityId].GetValueOrDefault(TimeSpan.FromMinutes(5));
-
-            if (oneMinCandles != null)
-            {
-                result.RsiValue1Min = CalculateRsi(oneMinCandles, _multiTimeframeRsiState[instrumentForAnalysis.SecurityId][TimeSpan.FromMinutes(1)], this.RsiPeriod);
-                result.RsiSignal1Min = DetectRsiDivergence(oneMinCandles, _multiTimeframeRsiState[instrumentForAnalysis.SecurityId][TimeSpan.FromMinutes(1)], this.RsiDivergenceLookback);
-                result.Atr1Min = CalculateAtr(oneMinCandles, _multiTimeframeAtrState[instrumentForAnalysis.SecurityId][TimeSpan.FromMinutes(1)], this.AtrPeriod);
-                result.AtrSignal1Min = GetAtrSignal(result.Atr1Min, _multiTimeframeAtrState[instrumentForAnalysis.SecurityId][TimeSpan.FromMinutes(1)], this.AtrSmaPeriod);
-                result.ObvValue1Min = CalculateObv(oneMinCandles, _multiTimeframeObvState[instrumentForAnalysis.SecurityId][TimeSpan.FromMinutes(1)]);
-                result.ObvSignal1Min = CalculateObvSignal(oneMinCandles, _multiTimeframeObvState[instrumentForAnalysis.SecurityId][TimeSpan.FromMinutes(1)], this.ObvMovingAveragePeriod);
-                result.ObvDivergenceSignal1Min = DetectObvDivergence(oneMinCandles, _multiTimeframeObvState[instrumentForAnalysis.SecurityId][TimeSpan.FromMinutes(1)], this.RsiDivergenceLookback);
-            }
-            if (fiveMinCandles != null)
-            {
-                result.RsiValue5Min = CalculateRsi(fiveMinCandles, _multiTimeframeRsiState[instrumentForAnalysis.SecurityId][TimeSpan.FromMinutes(5)], this.RsiPeriod);
-                result.RsiSignal5Min = DetectRsiDivergence(fiveMinCandles, _multiTimeframeRsiState[instrumentForAnalysis.SecurityId][TimeSpan.FromMinutes(5)], this.RsiDivergenceLookback);
-                result.Atr5Min = CalculateAtr(fiveMinCandles, _multiTimeframeAtrState[instrumentForAnalysis.SecurityId][TimeSpan.FromMinutes(5)], this.AtrPeriod);
-                result.AtrSignal5Min = GetAtrSignal(result.Atr5Min, _multiTimeframeAtrState[instrumentForAnalysis.SecurityId][TimeSpan.FromMinutes(5)], this.AtrSmaPeriod);
-                result.ObvValue5Min = CalculateObv(fiveMinCandles, _multiTimeframeObvState[instrumentForAnalysis.SecurityId][TimeSpan.FromMinutes(5)]);
-                result.ObvSignal5Min = CalculateObvSignal(fiveMinCandles, _multiTimeframeObvState[instrumentForAnalysis.SecurityId][TimeSpan.FromMinutes(5)], this.ObvMovingAveragePeriod);
-                result.ObvDivergenceSignal5Min = DetectObvDivergence(fiveMinCandles, _multiTimeframeObvState[instrumentForAnalysis.SecurityId][TimeSpan.FromMinutes(5)], this.RsiDivergenceLookback);
-            }
-
-            var priceEmaSignals = new Dictionary<TimeSpan, string>();
-            var vwapEmaSignals = new Dictionary<TimeSpan, string>();
-            foreach (var timeframe in _timeframes)
-            {
-                var candles = _multiTimeframeCandles[instrumentForAnalysis.SecurityId].GetValueOrDefault(timeframe);
-                if (candles == null || !candles.Any()) continue;
-                priceEmaSignals[timeframe] = CalculateEmaSignal(instrumentForAnalysis.SecurityId, candles, _multiTimeframePriceEmaState, useVwap: false);
-                vwapEmaSignals[timeframe] = CalculateEmaSignal(instrumentForAnalysis.SecurityId, candles, _multiTimeframeVwapEmaState, useVwap: true);
-            }
-
-            var (volumeSignal, currentCandleVolume, avgCandleVolume) = ("Neutral", 0L, 0L);
-            if (oneMinCandles != null && oneMinCandles.Any())
-            {
-                (volumeSignal, currentCandleVolume, avgCandleVolume) = CalculateVolumeSignalForTimeframe(oneMinCandles);
-            }
-
-            string oiSignal = "N/A";
-            if (oneMinCandles != null && oneMinCandles.Any())
-            {
-                oiSignal = CalculateOiSignal(oneMinCandles);
-            }
-
-            var paSignals = CalculatePriceActionSignals(instrument, dayVwap);
-            string customLevelSignal = CalculateCustomLevelSignal(instrument);
-
-            string candleSignal1Min = "N/A";
-            if (oneMinCandles != null) candleSignal1Min = RecognizeCandlestickPattern(oneMinCandles, result);
-            string candleSignal5Min = "N/A";
-            if (fiveMinCandles != null) candleSignal5Min = RecognizeCandlestickPattern(fiveMinCandles, result);
-
-            string profileKey = instrument.SecurityId;
-            if (_marketProfiles.TryGetValue(profileKey, out var liveProfile))
-            {
-                result.InitialBalanceSignal = GetInitialBalanceSignal(instrument.LTP, liveProfile, instrument.SecurityId);
-                result.InitialBalanceHigh = liveProfile.InitialBalanceHigh;
-                result.InitialBalanceLow = liveProfile.InitialBalanceLow;
-
-                // --- FIX: Always assign developing profile values. Do not wait for Initial Balance to be set. ---
-                result.DevelopingPoc = liveProfile.DevelopingTpoLevels.PointOfControl;
-                result.DevelopingVah = liveProfile.DevelopingTpoLevels.ValueAreaHigh;
-                result.DevelopingVal = liveProfile.DevelopingTpoLevels.ValueAreaLow;
-                result.DevelopingVpoc = liveProfile.DevelopingVolumeProfile.VolumePoc;
-
-                RunMarketProfileAnalysis(instrument, liveProfile, result);
-                _marketProfileService.UpdateProfile(instrument.SecurityId, liveProfile.ToMarketProfileData());
-            }
-
-            if (result.DevelopingPoc == 0)
-            {
-                var lastHistoricalProfile = _historicalMarketProfiles.GetValueOrDefault(instrument.SecurityId)?
-                                                                      .OrderByDescending(p => p.Date)
-                                                                      .FirstOrDefault();
-                if (lastHistoricalProfile != null)
-                {
-                    result.DevelopingPoc = lastHistoricalProfile.TpoLevelsInfo.PointOfControl;
-                    result.DevelopingVah = lastHistoricalProfile.TpoLevelsInfo.ValueAreaHigh;
-                    result.DevelopingVal = lastHistoricalProfile.TpoLevelsInfo.ValueAreaLow;
-                    result.DevelopingVpoc = lastHistoricalProfile.VolumeProfileInfo.VolumePoc;
-                }
-            }
-
-
-            result.Symbol = instrument.DisplayName;
-            result.LTP = instrument.LTP;
-            result.Vwap = dayVwap;
-            result.CurrentIv = instrument.ImpliedVolatility;
-            result.AvgIv = avgIv;
-            result.IvSignal = ivSignal;
-            result.CurrentVolume = currentCandleVolume;
-            result.AvgVolume = avgCandleVolume;
-            result.VolumeSignal = volumeSignal;
-            result.OiSignal = oiSignal;
-            result.CustomLevelSignal = customLevelSignal;
-            result.CandleSignal1Min = candleSignal1Min;
-            result.CandleSignal5Min = candleSignal5Min;
-            result.EmaSignal1Min = priceEmaSignals.GetValueOrDefault(TimeSpan.FromMinutes(1), "N/A");
-            result.EmaSignal5Min = priceEmaSignals.GetValueOrDefault(TimeSpan.FromMinutes(5), "N/A");
-            result.EmaSignal15Min = priceEmaSignals.GetValueOrDefault(TimeSpan.FromMinutes(15), "N/A");
-            result.VwapEmaSignal1Min = vwapEmaSignals.GetValueOrDefault(TimeSpan.FromMinutes(1), "N/A");
-            result.VwapEmaSignal5Min = vwapEmaSignals.GetValueOrDefault(TimeSpan.FromMinutes(5), "N/A");
-            result.VwapEmaSignal15Min = vwapEmaSignals.GetValueOrDefault(TimeSpan.FromMinutes(15), "N/A");
-            result.InstrumentGroup = GetInstrumentGroup(instrument);
-            result.UnderlyingGroup = instrument.UnderlyingSymbol;
-            result.PriceVsVwapSignal = paSignals.priceVsVwap;
-            result.PriceVsCloseSignal = paSignals.priceVsClose;
-            result.DayRangeSignal = paSignals.dayRange;
-
-            if (oneMinCandles != null && oneMinCandles.Count > 0)
-            {
-                result.OpenTypeSignal = AnalyzeOpenType(instrument, oneMinCandles);
-                var (vwapBandSignal, upperBand, lowerBand) = CalculateVwapBandSignal(instrument.LTP, oneMinCandles);
-                result.VwapBandSignal = vwapBandSignal;
-                result.VwapUpperBand = upperBand;
-                result.VwapLowerBand = lowerBand;
-                result.AnchoredVwap = CalculateAnchoredVwap(oneMinCandles);
-            }
-            var yesterdayProfile = _historicalMarketProfiles.GetValueOrDefault(instrument.SecurityId)?.FirstOrDefault(p => p.Date.Date < DateTime.Today);
-            result.YesterdayProfileSignal = AnalyzePriceRelativeToYesterdayProfile(instrument.LTP, yesterdayProfile);
-
-
-            if (instrument.InstrumentType == "INDEX")
-            {
-                result.InstitutionalIntent = RunTier1InstitutionalIntentAnalysis(instrument);
-                RunIvSkewAnalysis(instrument);
-            }
-            else
-            {
-                result.InstitutionalIntent = "N/A";
-            }
-
-            SynthesizeTradeSignal(result);
-
-            if (result.InstrumentGroup == "Indices")
-            {
-                UpdateComprehensiveIndexSignal(result);
-            }
-
-            // --- NEW: Link futures data to the index after all calculations are done ---
-            LinkFuturesDataToIndex();
-
-            OnAnalysisUpdated?.Invoke(result);
+            return instrument;
         }
 
-        /// <summary>
-        /// Finds the Nifty Index and Nifty Futures analysis results and copies the VWAP-related
-        /// data from the futures to the index to ensure the UI shows the correct data.
-        /// </summary>
+        private void UpdateMarketProfileForCandle(DashboardInstrument instrument, Candle lastClosedCandle)
+        {
+            if (instrument.InstrumentType == "FUTIDX")
+            {
+                var underlyingIndex = _instrumentCache.Values.FirstOrDefault(i => i.InstrumentType == "INDEX" && i.UnderlyingSymbol == instrument.UnderlyingSymbol);
+                if (underlyingIndex != null)
+                {
+                    var indexCandles = _stateManager.GetCandles(underlyingIndex.SecurityId, TimeSpan.FromMinutes(1));
+                    var matchingIndexCandle = indexCandles?.FirstOrDefault(c => c.Timestamp == lastClosedCandle.Timestamp);
+                    if (matchingIndexCandle != null && _stateManager.MarketProfiles.TryGetValue(underlyingIndex.SecurityId, out var profile))
+                    {
+                        _signalGenerationService.UpdateMarketProfile(profile, matchingIndexCandle, lastClosedCandle);
+                    }
+                }
+            }
+            else if (instrument.InstrumentType != "INDEX")
+            {
+                if (_stateManager.MarketProfiles.TryGetValue(instrument.SecurityId, out var profile))
+                {
+                    _signalGenerationService.UpdateMarketProfile(profile, lastClosedCandle, lastClosedCandle);
+                }
+            }
+        }
+
         private void LinkFuturesDataToIndex()
         {
             var niftyIndex = _instrumentCache.Values.FirstOrDefault(i => i.Symbol == "Nifty 50");
             var niftyFuture = _instrumentCache.Values.FirstOrDefault(i => i.IsFuture && i.UnderlyingSymbol == "NIFTY");
 
-            if (niftyIndex == null || niftyFuture == null) return;
-
-            if (_analysisResults.TryGetValue(niftyIndex.SecurityId, out var indexResult) &&
-                _analysisResults.TryGetValue(niftyFuture.SecurityId, out var futureResult))
+            if (niftyIndex != null && niftyFuture != null &&
+                _stateManager.AnalysisResults.TryGetValue(niftyIndex.SecurityId, out var indexResult) &&
+                _stateManager.AnalysisResults.TryGetValue(niftyFuture.SecurityId, out var futureResult))
             {
                 indexResult.PriceVsVwapSignal = futureResult.PriceVsVwapSignal;
                 indexResult.VwapBandSignal = futureResult.VwapBandSignal;
                 indexResult.Vwap = futureResult.Vwap;
-                indexResult.VwapUpperBand = futureResult.VwapUpperBand;
-                indexResult.VwapLowerBand = futureResult.VwapLowerBand;
-                indexResult.AnchoredVwap = futureResult.AnchoredVwap;
             }
-        }
-
-
-        private void RunIvSkewAnalysis(DashboardInstrument indexInstrument)
-        {
-            if (!_ivSkewStates.ContainsKey(indexInstrument.SecurityId)) return;
-            if (!_nearestExpiryDates.TryGetValue(indexInstrument.Symbol, out var expiryDate)) return;
-
-            var state = _ivSkewStates[indexInstrument.SecurityId];
-            var result = _analysisResults[indexInstrument.SecurityId];
-            int strikeStep = GetStrikePriceStep(indexInstrument.Symbol);
-            decimal atmStrike = Math.Round(indexInstrument.LTP / strikeStep) * strikeStep;
-            string underlyingForLookup = GetUnderlyingSymbolForScripMaster(indexInstrument.Symbol);
-
-            // --- NEW: Define a range of OTM strikes to analyze ---
-            const int otmStrikeCount = 4;
-            var otmCallStrikes = new List<decimal>();
-            var otmPutStrikes = new List<decimal>();
-            for (int i = 1; i <= otmStrikeCount; i++)
-            {
-                otmCallStrikes.Add(atmStrike + (i * strikeStep));
-                otmPutStrikes.Add(atmStrike - (i * strikeStep));
-            }
-
-            // Find ATM options
-            var atmCall = FindOptionInCache(underlyingForLookup, expiryDate, atmStrike, "CE");
-            var atmPut = FindOptionInCache(underlyingForLookup, expiryDate, atmStrike, "PE");
-
-            // Find OTM options
-            var foundOtmCalls = otmCallStrikes.Select(s => FindOptionInCache(underlyingForLookup, expiryDate, s, "CE")).Where(o => o != null && o.ImpliedVolatility > 0).ToList();
-            var foundOtmPuts = otmPutStrikes.Select(s => FindOptionInCache(underlyingForLookup, expiryDate, s, "PE")).Where(o => o != null && o.ImpliedVolatility > 0).ToList();
-
-
-            if (atmCall == null || atmPut == null || foundOtmCalls.Count < 2 || foundOtmPuts.Count < 2)
-            {
-                result.IvSkewSignal = "ATM/OTM Options Not Found";
-                return;
-            }
-
-            // Update history for ATM IVs
-            UpdateIvHistory(state.AtmCallIvHistory, atmCall.ImpliedVolatility);
-            UpdateIvHistory(state.AtmPutIvHistory, atmPut.ImpliedVolatility);
-
-            if (state.AtmPutIvHistory.Count < 3)
-            {
-                result.IvSkewSignal = "Building IV History...";
-                return;
-            }
-
-            // Calculate current average OTM IVs and slopes
-            decimal avgOtmCallIv = foundOtmCalls.Average(o => o!.ImpliedVolatility);
-            decimal avgOtmPutIv = foundOtmPuts.Average(o => o!.ImpliedVolatility);
-            decimal putSkewSlope = avgOtmPutIv - atmPut.ImpliedVolatility;
-            decimal callSkewSlope = avgOtmCallIv - atmCall.ImpliedVolatility;
-
-            // Update slope history
-            UpdateIvHistory(state.PutSkewSlopeHistory, putSkewSlope);
-            UpdateIvHistory(state.CallSkewSlopeHistory, callSkewSlope);
-
-            // Analyze the trend of the slopes
-            string putSkewTrend = CalculateTrend(state.PutSkewSlopeHistory, 5);
-            string callSkewTrend = CalculateTrend(state.CallSkewSlopeHistory, 5);
-
-            if (putSkewTrend == "Trending Up" && putSkewSlope > 0)
-            {
-                result.IvSkewSignal = "Aggressive Bearish Skew (Fear Increasing)";
-            }
-            else if (callSkewTrend == "Trending Up" && callSkewSlope > 0)
-            {
-                result.IvSkewSignal = "Aggressive Bullish Skew (Greed Increasing)";
-            }
-            else if (putSkewTrend == "Trending Down" && state.PutSkewSlopeHistory.LastOrDefault() < state.PutSkewSlopeHistory.FirstOrDefault())
-            {
-                result.IvSkewSignal = "Bearish Sentiment Fading";
-            }
-            else if (callSkewTrend == "Trending Down" && state.CallSkewSlopeHistory.LastOrDefault() < state.CallSkewSlopeHistory.FirstOrDefault())
-            {
-                result.IvSkewSignal = "Bullish Sentiment Fading";
-            }
-            else
-            {
-                result.IvSkewSignal = (atmPut.ImpliedVolatility > atmCall.ImpliedVolatility) ? "Bearish Skew (Puts Pricier)" : "Bullish Skew (Calls Pricier)";
-            }
-        }
-
-        private DashboardInstrument? FindOptionInCache(string underlying, DateTime expiry, decimal strike, string type)
-        {
-            return _instrumentCache.Values.FirstOrDefault(i =>
-                i.InstrumentType == "OPTIDX" &&
-                i.UnderlyingSymbol == underlying &&
-                i.OptionType == type &&
-                i.ExpiryDate.HasValue && i.ExpiryDate.Value.Date == expiry.Date &&
-                i.StrikePrice == strike);
-        }
-
-        private void UpdateIvHistory(List<decimal> history, decimal value)
-        {
-            history.Add(value);
-            if (history.Count > 10) history.RemoveAt(0);
-        }
-
-        // --- MAGA REFACTOR: This method is now obsolete and replaced by the Thesis model ---
-        //private IntradayContext DetermineIntradayContext(AnalysisResult result) { ... }
-
-        // --- MAGA REFACTOR: The new brain of the operation ---
-        private MarketThesis UpdateIntradayThesis(AnalysisResult result)
-        {
-            // Step 1: Determine the long-term structural bias from Market Profile
-            bool isStructurallyBullish = result.MarketStructure == "Trending Up";
-            bool isStructurallyBearish = result.MarketStructure == "Trending Down";
-            bool isBalancing = result.MarketStructure == "Balancing";
-
-            // Step 2: Determine the current dominant player based on short-term evidence
-            DominantPlayer player = DominantPlayer.Indeterminate;
-            int buyerEvidence = 0;
-            int sellerEvidence = 0;
-
-            if (result.PriceVsVwapSignal == "Above VWAP") buyerEvidence++;
-            if (result.PriceVsVwapSignal == "Below VWAP") sellerEvidence++;
-            if (result.EmaSignal5Min == "Bullish Cross") buyerEvidence++;
-            if (result.EmaSignal5Min == "Bearish Cross") sellerEvidence++;
-            if (result.OiSignal == "Long Buildup") buyerEvidence++;
-            if (result.OiSignal == "Short Buildup") sellerEvidence++;
-            if (result.VolumeSignal == "Volume Burst" && result.LTP > result.Vwap) buyerEvidence++;
-            if (result.VolumeSignal == "Volume Burst" && result.LTP < result.Vwap) sellerEvidence++;
-
-            if (buyerEvidence > sellerEvidence + 1) player = DominantPlayer.Buyers;
-            else if (sellerEvidence > buyerEvidence + 1) player = DominantPlayer.Sellers;
-            else player = DominantPlayer.Balance;
-
-            result.DominantPlayer = player; // Store for UI display
-
-            // Step 3: Synthesize the final thesis
-            if (isStructurallyBullish)
-            {
-                if (player == DominantPlayer.Buyers) return MarketThesis.Bullish_Trend;
-                if (player == DominantPlayer.Sellers) return MarketThesis.Bullish_Rotation; // A pullback in a larger uptrend
-                return MarketThesis.Bullish_Trend; // Default to trend continuation
-            }
-
-            if (isStructurallyBearish)
-            {
-                if (player == DominantPlayer.Sellers) return MarketThesis.Bearish_Trend;
-                if (player == DominantPlayer.Buyers) return MarketThesis.Bearish_Rotation; // A rally in a larger downtrend
-                return MarketThesis.Bearish_Trend; // Default to trend continuation
-            }
-
-            if (isBalancing)
-            {
-                if (result.MarketProfileSignal == "Look Above and Fail at Y-VAH") return MarketThesis.Bearish_Reversal_Attempt;
-                if (result.MarketProfileSignal == "Look Below and Fail at Y-VAL") return MarketThesis.Bullish_Reversal_Attempt;
-                return MarketThesis.Balancing;
-            }
-
-            return MarketThesis.Indeterminate;
-        }
-
-
-        private void SynthesizeTradeSignal(AnalysisResult result)
-        {
-            if (result.InstrumentGroup != "Indices")
-            {
-                return;
-            }
-
-            // --- MAGA REFACTOR: The thesis is now the primary driver ---
-            MarketThesis thesis = UpdateIntradayThesis(result);
-            result.MarketThesis = thesis;
-
-            var (bullDrivers, bearDrivers, conviction) = CalculateConvictionScore(result, thesis);
-            result.BullishDrivers = bullDrivers;
-            result.BearishDrivers = bearDrivers;
-            result.ConvictionScore = conviction;
-
-            string playbook;
-            if (conviction >= 7) playbook = "Strong Bullish Conviction";
-            else if (conviction >= 3) playbook = "Moderate Bullish Conviction";
-            else if (conviction <= -7) playbook = "Strong Bearish Conviction";
-            else if (conviction <= -3) playbook = "Moderate Bearish Conviction";
-            else playbook = "Neutral / Observe";
-
-            string newPrimarySignal;
-            if (conviction >= 3) newPrimarySignal = "Bullish";
-            else if (conviction <= -3) newPrimarySignal = "Bearish";
-            else newPrimarySignal = "Neutral";
-
-            string oldPrimarySignal = result.PrimarySignal;
-            result.PrimarySignal = newPrimarySignal;
-            result.FinalTradeSignal = playbook;
-            result.MarketNarrative = GenerateMarketNarrative(result);
-
-            if (result.PrimarySignal != oldPrimarySignal)
-            {
-                if (_lastSignalTime.TryGetValue(result.SecurityId, out var lastTime) && (DateTime.UtcNow - lastTime).TotalSeconds < 60)
-                {
-                    return;
-                }
-                _lastSignalTime[result.SecurityId] = DateTime.UtcNow;
-
-                _signalLoggerService.LogSignal(result);
-                Task.Run(() => _notificationService.SendTelegramSignalAsync(result, oldPrimarySignal));
-            }
-        }
-
-        // --- MAGA REFACTOR: Score calculation is now driven by the Thesis ---
-        private (List<string> BullishDrivers, List<string> BearishDrivers, int Score) CalculateConvictionScore(AnalysisResult r, MarketThesis thesis)
-        {
-            var bullDrivers = new List<SignalDriver>();
-            var bearDrivers = new List<SignalDriver>();
-
-            switch (thesis)
-            {
-                case MarketThesis.Bullish_Trend:
-                case MarketThesis.Bullish_Rotation: // In a pullback, we still look for trend continuation signals
-                    bullDrivers = _settingsViewModel.Strategy.TrendContinuation_Bullish.Where(d => d.IsEnabled).ToList();
-                    bearDrivers = _settingsViewModel.Strategy.TrendContinuation_Bearish.Where(d => d.IsEnabled).ToList();
-                    break;
-                case MarketThesis.Bearish_Trend:
-                case MarketThesis.Bearish_Rotation: // In a rally, we still look for trend continuation signals
-                    bullDrivers = _settingsViewModel.Strategy.TrendContinuation_Bullish.Where(d => d.IsEnabled).ToList();
-                    bearDrivers = _settingsViewModel.Strategy.TrendContinuation_Bearish.Where(d => d.IsEnabled).ToList();
-                    break;
-                case MarketThesis.Balancing:
-                    bullDrivers = _settingsViewModel.Strategy.MeanReversion_Bullish.Where(d => d.IsEnabled).ToList();
-                    bearDrivers = _settingsViewModel.Strategy.MeanReversion_Bearish.Where(d => d.IsEnabled).ToList();
-                    break;
-                case MarketThesis.Bullish_Reversal_Attempt:
-                    bullDrivers = _settingsViewModel.Strategy.Reversal_Bullish.Where(d => d.IsEnabled).ToList();
-                    bearDrivers = new List<SignalDriver>(); // Ignore bearish signals during a reversal attempt
-                    break;
-                case MarketThesis.Bearish_Reversal_Attempt:
-                    bullDrivers = new List<SignalDriver>(); // Ignore bullish signals
-                    bearDrivers = _settingsViewModel.Strategy.Reversal_Bearish.Where(d => d.IsEnabled).ToList();
-                    break;
-            }
-
-            int score = 0;
-            var triggeredBullDrivers = new List<string>();
-            var triggeredBearDrivers = new List<string>();
-
-            const int confluenceBonus = 2;
-
-            foreach (var driver in bullDrivers)
-            {
-                if (CheckDriverCondition(r, driver.Name))
-                {
-                    int currentWeight = driver.Weight;
-                    string driverText = $"{driver.Name} (+{currentWeight})";
-
-                    bool isAtSupport = r.MarketProfileSignal.Contains("dVAL") || r.MarketProfileSignal.Contains("Y-VAL") || r.VwapBandSignal == "At Lower Band";
-                    if (isAtSupport && (driver.Name.Contains("Div") || driver.Name.Contains("Exhaustion") || driver.Name.Contains("Pattern")))
-                    {
-                        currentWeight += confluenceBonus;
-                        driverText = $"{driver.Name} (+{driver.Weight} +{confluenceBonus} Conf.)";
-                    }
-
-                    score += currentWeight;
-                    triggeredBullDrivers.Add(driverText);
-                }
-            }
-
-            foreach (var driver in bearDrivers)
-            {
-                if (CheckDriverCondition(r, driver.Name))
-                {
-                    int currentWeight = driver.Weight;
-                    string driverText = $"{driver.Name} (-{currentWeight})";
-
-                    bool isAtResistance = r.MarketProfileSignal.Contains("dVAH") || r.MarketProfileSignal.Contains("Y-VAH") || r.VwapBandSignal == "At Upper Band";
-                    if (isAtResistance && (driver.Name.Contains("Div") || driver.Name.Contains("Exhaustion") || driver.Name.Contains("Pattern")))
-                    {
-                        currentWeight += confluenceBonus;
-                        driverText = $"{driver.Name} (-{driver.Weight} +{confluenceBonus} Conf.)";
-                    }
-
-                    score -= currentWeight;
-                    triggeredBearDrivers.Add(driverText);
-                }
-            }
-
-            return (triggeredBullDrivers, triggeredBearDrivers, score);
-        }
-
-        private bool CheckDriverCondition(AnalysisResult r, string driverName)
-        {
-            bool isBullishPattern = r.CandleSignal5Min.Contains("Bullish");
-            bool isBearishPattern = r.CandleSignal5Min.Contains("Bearish");
-            bool atSupport = r.DayRangeSignal == "Near Low" || r.VwapBandSignal == "At Lower Band" || r.MarketProfileSignal.Contains("VAL");
-            bool atResistance = r.DayRangeSignal == "Near High" || r.VwapBandSignal == "At Upper Band" || r.MarketProfileSignal.Contains("VAH");
-            bool volumeConfirmed = r.VolumeSignal == "Volume Burst";
-            bool isNotInStrongTrend = r.MarketThesis != MarketThesis.Bullish_Trend && r.MarketThesis != MarketThesis.Bearish_Trend;
-
-            switch (driverName)
-            {
-                case "Bullish IV Momentum": return r.IvSkewSignal == "Bullish IV Momentum";
-                case "Bearish IV Momentum": return r.IvSkewSignal == "Bearish IV Momentum";
-                case "Range Contraction": return r.IvSkewSignal == "Range Contraction";
-                case "Bullish Skew Divergence (Full)": return r.IvSkewSignal == "Bullish Skew Divergence (Full)" && isNotInStrongTrend;
-                case "Bullish Skew Divergence (Partial)": return r.IvSkewSignal == "Bullish Skew Divergence (Partial)" && isNotInStrongTrend;
-                case "Bearish Skew Divergence (Full)": return r.IvSkewSignal == "Bearish Skew Divergence (Full)" && isNotInStrongTrend;
-                case "Bearish Skew Divergence (Partial)": return r.IvSkewSignal == "Bearish Skew Divergence (Partial)" && isNotInStrongTrend;
-
-                case "Bullish Pattern at Key Support": return isBullishPattern && atSupport;
-                case "Bearish Pattern at Key Resistance": return isBearishPattern && atResistance;
-                case "Bullish Pattern with Volume Confirmation": return isBullishPattern && volumeConfirmed;
-                case "Bearish Pattern with Volume Confirmation": return isBearishPattern && volumeConfirmed;
-                case "Bullish Pattern (Unconfirmed)": return isBullishPattern && !atSupport && !volumeConfirmed;
-                case "Bearish Pattern (Unconfirmed)": return isBearishPattern && !atResistance && !volumeConfirmed;
-                case "True Acceptance Above Y-VAH": return r.MarketProfileSignal == "True Acceptance Above Y-VAH";
-                case "Look Below and Fail at Y-VAL": return r.MarketProfileSignal == "Look Below and Fail at Y-VAL";
-                case "Initiative Buying Above Y-VAH": return r.MarketProfileSignal == "Initiative Buying Above Y-VAH";
-                case "True Acceptance Below Y-VAL": return r.MarketProfileSignal == "True Acceptance Below Y-VAL";
-                case "Look Above and Fail at Y-VAH": return r.MarketProfileSignal == "Look Above and Fail at Y-VAH";
-                case "Initiative Selling Below Y-VAL": return r.MarketProfileSignal == "Initiative Selling Below Y-VAL";
-
-                case "Institutional Intent is Bullish": return r.InstitutionalIntent.Contains("Bullish");
-                case "Price above VWAP": return r.PriceVsVwapSignal == "Above VWAP";
-                case "5m VWAP EMA confirms bullish trend": return r.VwapEmaSignal5Min == "Bullish Cross";
-                case "OI confirms new longs": return r.OiSignal == "Long Buildup";
-                case "IB breakout is extending": return r.InitialBalanceSignal == "IB Extension Up";
-                case "Bullish OBV Div at Profile Support": return r.ObvDivergenceSignal5Min.Contains("Bullish") && atSupport && isNotInStrongTrend;
-                case "Bullish RSI Div at Profile Support": return r.RsiSignal5Min.Contains("Bullish") && atSupport && isNotInStrongTrend;
-
-                case "Institutional Intent is Bearish": return r.InstitutionalIntent.Contains("Bearish");
-                case "Price below VWAP": return r.PriceVsVwapSignal == "Below VWAP";
-                case "5m VWAP EMA confirms bearish trend": return r.VwapEmaSignal5Min == "Bearish Cross";
-                case "OI confirms new shorts": return r.OiSignal == "Short Buildup";
-                case "IB breakdown is extending": return r.InitialBalanceSignal == "IB Extension Down";
-                case "Bearish OBV Div at Profile Resistance": return r.ObvDivergenceSignal5Min.Contains("Bearish") && atResistance && isNotInStrongTrend;
-                case "Bearish RSI Div at Profile Resistance": return r.RsiSignal5Min.Contains("Bearish") && atResistance && isNotInStrongTrend;
-
-                case "Bullish OBV Div at range low": return r.ObvDivergenceSignal5Min.Contains("Bullish") && r.VwapBandSignal == "At Lower Band";
-                case "Bullish RSI Div at range low": return r.RsiSignal5Min.Contains("Bullish") && r.VwapBandSignal == "At Lower Band";
-                case "Low volume suggests exhaustion (Bullish)": return r.VolumeSignal != "Volume Burst" && r.AtrSignal5Min == "Vol Contracting" && r.DayRangeSignal == "Near Low";
-                case "Possible range breakout with volume": return r.DayRangeSignal == "Near High" && r.VolumeSignal == "Volume Burst";
-
-                case "Bearish OBV Div at range high": return r.ObvDivergenceSignal5Min.Contains("Bearish") && r.VwapBandSignal == "At Upper Band";
-                case "Bearish RSI Div at range high": return r.RsiSignal5Min.Contains("Bearish") && r.VwapBandSignal == "At Upper Band";
-                case "Low volume suggests exhaustion (Bearish)": return r.VolumeSignal != "Volume Burst" && r.AtrSignal5Min == "Vol Contracting" && r.DayRangeSignal == "Near High";
-                case "Possible range breakdown with volume": return r.DayRangeSignal == "Near Low" && r.VolumeSignal == "Volume Burst";
-
-                case "Strong bullish confluence with Inst. backing": return r.InstitutionalIntent.Contains("Bullish") && r.EmaSignal5Min == "Bullish Cross" && r.VolumeSignal == "Volume Burst";
-
-                case "Strong bearish confluence with Inst. backing": return r.InstitutionalIntent.Contains("Bearish") && r.EmaSignal5Min == "Bearish Cross" && r.VolumeSignal == "Volume Burst";
-
-                default: return false;
-            }
-        }
-
-        private string GenerateMarketNarrative(AnalysisResult r)
-        {
-            var narrative = new List<string>();
-            narrative.Add($"Thesis: {r.MarketThesis}.");
-            narrative.Add($"Dominant Player: {r.DominantPlayer}.");
-            narrative.Add($"Open: {r.OpenTypeSignal}.");
-            narrative.Add($"vs Y-Value: {r.YesterdayProfileSignal}.");
-            narrative.Add($"vs VWAP: {r.PriceVsVwapSignal}.");
-
-            if (r.MarketThesis == MarketThesis.Bullish_Trend || r.MarketThesis == MarketThesis.Bearish_Trend)
-            {
-                narrative.Add(r.EmaSignal15Min == "Bullish Cross" ? "Long-term trend is Up." : "Long-term trend is Down.");
-            }
-            if (r.MarketThesis == MarketThesis.Balancing)
-            {
-                narrative.Add($"Price is between VWAP bands ({r.VwapLowerBand:N2} - {r.VwapUpperBand:N2}).");
-            }
-
-            return string.Join(" ", narrative);
-        }
-
-        private void UpdateComprehensiveIndexSignal(AnalysisResult result)
-        {
-            var signal = new IndexSignal();
-
-            int score = result.ConvictionScore;
-
-            if (result.DailyBias.Contains("Bullish"))
-            {
-                signal.Bias = "Bullish";
-            }
-            else if (result.DailyBias.Contains("Bearish"))
-            {
-                signal.Bias = "Bearish";
-            }
-            else
-            {
-                signal.Bias = "Neutral / Rotational";
-            }
-
-            if (result.EmaSignal5Min == "Bullish Cross" && result.EmaSignal15Min == "Bullish Cross")
-            {
-                signal.TrendDirection = "Uptrend";
-            }
-            else if (result.EmaSignal5Min == "Bearish Cross" && result.EmaSignal15Min == "Bearish Cross")
-            {
-                signal.TrendDirection = "Downtrend";
-            }
-            else
-            {
-                signal.TrendDirection = "Sideways / Choppy";
-            }
-
-            signal.TrendConviction = result.InstitutionalIntent;
-
-            if (result.RsiSignal5Min.Contains("Bullish Divergence") || result.ObvDivergenceSignal5Min.Contains("Bullish Divergence"))
-            {
-                signal.Momentum = "Fading (Bullish Reversal Signal)";
-            }
-            else if (result.RsiValue5Min > 60 && result.RsiValue5Min > result.RsiValue1Min)
-            {
-                signal.Momentum = "Increasing (Bullish)";
-            }
-            else if (result.RsiValue5Min < 40 && result.RsiValue5Min < result.RsiValue1Min)
-            {
-                signal.Momentum = "Increasing (Bearish)";
-            }
-            else
-            {
-                signal.Momentum = "Neutral";
-            }
-
-            if (result.AtrSignal5Min == "Vol Expanding")
-            {
-                signal.Volatility = "Expanding";
-            }
-            else if (result.AtrSignal5Min == "Vol Contracting")
-            {
-                signal.Volatility = "Contracting";
-            }
-            else
-            {
-                signal.Volatility = "Stable";
-            }
-
-            if (score >= 7) signal.OverallSignal = "Strong Buy Opportunity";
-            else if (score >= 3) signal.OverallSignal = "Cautious Buy";
-            else if (score <= -7) signal.OverallSignal = "Strong Sell Opportunity";
-            else if (score <= -3) signal.OverallSignal = "Cautious Sell";
-            else signal.OverallSignal = "Observe / No Clear Edge";
-
-            signal.SupportingFactors = result.BullishDrivers;
-            signal.ContradictingFactors = result.BearishDrivers;
-
-            result.IndexSignal = signal;
-        }
-
-        private string CalculateEmaSignal(string securityId, List<Candle> candles, Dictionary<string, Dictionary<TimeSpan, EmaState>> stateDictionary, bool useVwap)
-        {
-            if (candles.Count < 2) return "Building History...";
-
-            var timeframe = candles[1].Timestamp - candles[0].Timestamp;
-            var state = stateDictionary[securityId][timeframe];
-            var lastCandle = candles.Last();
-            var price = useVwap ? lastCandle.Vwap : lastCandle.Close;
-
-            if (state.CurrentShortEma == 0 || state.CurrentLongEma == 0)
-            {
-                return "Warming Up...";
-            }
-
-            decimal shortMultiplier = 2.0m / (ShortEmaLength + 1);
-            decimal longMultiplier = 2.0m / (LongEmaLength + 1);
-
-            state.CurrentShortEma = (price - state.CurrentShortEma) * shortMultiplier + state.CurrentShortEma;
-            state.CurrentLongEma = (price - state.CurrentLongEma) * longMultiplier + state.CurrentLongEma;
-
-            if (state.CurrentShortEma > state.CurrentLongEma) return "Bullish Cross";
-            if (state.CurrentShortEma < state.CurrentLongEma) return "Bearish Cross";
-            return "Neutral";
-        }
-
-        private void WarmupIndicators(string securityId, TimeSpan timeframe)
-        {
-            var candles = _multiTimeframeCandles[securityId][timeframe];
-            if (!candles.Any()) return;
-
-            var priceState = _multiTimeframePriceEmaState[securityId][timeframe];
-            var closePrices = candles.Select(c => c.Close).ToList();
-            if (closePrices.Count >= LongEmaLength)
-            {
-                priceState.CurrentShortEma = CalculateFullEma(closePrices, ShortEmaLength);
-                priceState.CurrentLongEma = CalculateFullEma(closePrices, LongEmaLength);
-            }
-
-            var vwapState = _multiTimeframeVwapEmaState[securityId][timeframe];
-            var vwapPrices = candles.Select(c => c.Vwap).ToList();
-            if (vwapPrices.Count >= LongEmaLength)
-            {
-                vwapState.CurrentShortEma = CalculateFullEma(vwapPrices, ShortEmaLength);
-                vwapState.CurrentLongEma = CalculateFullEma(vwapPrices, LongEmaLength);
-            }
-
-            Debug.WriteLine($"[IndicatorWarmup] Warmed up indicators for {securityId} on {timeframe.TotalMinutes}m timeframe.");
-        }
-
-        private decimal CalculateFullEma(List<decimal> prices, int period)
-        {
-            if (prices.Count < period) return 0;
-
-            decimal multiplier = 2.0m / (period + 1);
-            decimal ema = prices.Take(period).Average();
-
-            for (int i = period; i < prices.Count; i++)
-            {
-                ema = (prices[i] - ema) * multiplier + ema;
-            }
-            return ema;
-        }
-
-
-        #region Helper Calculation Methods
-        private string GetUnderlyingSymbolForScripMaster(string displayName)
-        {
-            return displayName switch
-            {
-                "Nifty 50" => "NIFTY",
-                "Nifty Bank" => "BANKNIFTY",
-                "Sensex" => "SENSEX",
-                _ => displayName
-            };
-        }
-
-        private int GetStrikePriceStep(string underlyingSymbol)
-        {
-            string upperSymbol = underlyingSymbol.ToUpperInvariant();
-            if (upperSymbol.Contains("SENSEX") || (upperSymbol.Contains("NIFTY") && upperSymbol.Contains("BANK")))
-            {
-                return 100;
-            }
-            return 50;
-        }
-
-        private (string signal, decimal upperBand, decimal lowerBand) CalculateVwapBandSignal(decimal ltp, List<Candle> candles)
-        {
-            if (candles.Count < 2) return ("N/A", 0, 0);
-
-            var vwap = candles.Last().Vwap;
-            if (vwap == 0) return ("N/A", 0, 0);
-
-            decimal sumOfSquares = 0;
-            foreach (var candle in candles)
-            {
-                sumOfSquares += (decimal)Math.Pow((double)(candle.Close - vwap), 2);
-            }
-            decimal stdDev = (decimal)Math.Sqrt((double)(sumOfSquares / candles.Count));
-
-            var upperBand = vwap + (stdDev * VwapUpperBandMultiplier);
-            var lowerBand = vwap - (stdDev * VwapLowerBandMultiplier);
-
-            string signal = "Inside Bands";
-            if (ltp > upperBand) signal = "Above Upper Band";
-            else if (ltp < lowerBand) signal = "Below Lower Band";
-            else if (Math.Abs(ltp - upperBand) < (upperBand * 0.001m)) signal = "At Upper Band";
-            else if (Math.Abs(ltp - lowerBand) < (lowerBand * 0.001m)) signal = "At Lower Band";
-
-            return (signal, upperBand, lowerBand);
-        }
-
-        private decimal CalculateAnchoredVwap(List<Candle> candles)
-        {
-            if (candles == null || !candles.Any()) return 0;
-
-            decimal cumulativePriceVolume = 0;
-            long cumulativeVolume = 0;
-
-            foreach (var candle in candles)
-            {
-                cumulativePriceVolume += candle.Close * candle.Volume;
-                cumulativeVolume += candle.Volume;
-            }
-
-            return (cumulativeVolume > 0) ? cumulativePriceVolume / cumulativeVolume : 0;
-        }
-
-        private (decimal avgIv, string ivSignal) CalculateIvSignal(decimal currentIv, List<decimal> ivHistory)
-        {
-            string signal = "Neutral";
-            decimal avgIv = 0;
-            var validIvHistory = ivHistory.Where(iv => iv > 0).ToList();
-
-            if (validIvHistory.Any() && validIvHistory.Count >= MinIvHistoryForSignal)
-            {
-                avgIv = validIvHistory.Average();
-                if (currentIv > (avgIv + this.IvSpikeThreshold)) signal = "IV Spike Up";
-                else if (currentIv < (avgIv - this.IvSpikeThreshold)) signal = "IV Drop Down";
-            }
-            else if (currentIv > 0)
-            {
-                signal = "Building History...";
-            }
-            return (avgIv, signal);
-        }
-
-        private (string signal, long currentVolume, long averageVolume) CalculateVolumeSignalForTimeframe(List<Candle> candles)
-        {
-            if (!candles.Any()) return ("N/A", 0, 0);
-
-            long currentCandleVolume = candles.Last().Volume;
-            if (candles.Count < 2) return ("Building History...", currentCandleVolume, 0);
-
-            var historyCandles = candles.Take(candles.Count - 1).ToList();
-            if (historyCandles.Count > this.VolumeHistoryLength)
-            {
-                historyCandles = historyCandles.Skip(historyCandles.Count - this.VolumeHistoryLength).ToList();
-            }
-
-            if (!historyCandles.Any()) return ("Building History...", currentCandleVolume, 0);
-
-            double averageVolume = historyCandles.Average(c => (double)c.Volume);
-            if (averageVolume > 0 && currentCandleVolume > (averageVolume * this.VolumeBurstMultiplier))
-            {
-                return ("Volume Burst", currentCandleVolume, (long)averageVolume);
-            }
-            return ("Neutral", currentCandleVolume, (long)averageVolume);
-        }
-
-        private string CalculateOiSignal(List<Candle> candles)
-        {
-            if (candles.Count < 2) return "Building History...";
-
-            var currentCandle = candles.Last();
-            var previousCandle = candles[candles.Count - 2];
-
-            if (previousCandle.OpenInterest == 0 || currentCandle.OpenInterest == 0)
-            {
-                return "Building History...";
-            }
-
-            bool isPriceUp = currentCandle.Close > previousCandle.Close;
-            bool isPriceDown = currentCandle.Close < previousCandle.Close;
-            bool isOiUp = currentCandle.OpenInterest > previousCandle.OpenInterest;
-            bool isOiDown = currentCandle.OpenInterest < previousCandle.OpenInterest;
-
-            if (isPriceUp && isOiUp) return "Long Buildup";
-            if (isPriceUp && isOiDown) return "Short Covering";
-            if (isPriceDown && isOiUp) return "Short Buildup";
-            if (isPriceDown && isOiDown) return "Long Unwinding";
-
-            return "Neutral";
-        }
-
-        private decimal CalculateRsi(List<Candle> candles, RsiState state, int period)
-        {
-            if (candles.Count <= period) return 0m;
-
-            var lastCandle = candles.Last();
-            var secondLastCandle = candles[candles.Count - 2];
-            var change = lastCandle.Close - secondLastCandle.Close;
-            var gain = Math.Max(0, change);
-            var loss = Math.Max(0, -change);
-
-            if (state.AvgGain == 0)
-            {
-                var initialChanges = candles.Skip(1).Select((c, i) => c.Close - candles[i].Close).ToList();
-                state.AvgGain = initialChanges.Take(period).Where(ch => ch > 0).DefaultIfEmpty(0).Average();
-                state.AvgLoss = initialChanges.Take(period).Where(ch => ch < 0).Select(ch => -ch).DefaultIfEmpty(0).Average();
-            }
-            else
-            {
-                state.AvgGain = ((state.AvgGain * (period - 1)) + gain) / period;
-                state.AvgLoss = ((state.AvgLoss * (period - 1)) + loss) / period;
-            }
-
-            if (state.AvgLoss == 0) return 100m;
-
-            var rs = state.AvgGain / state.AvgLoss;
-            var rsi = 100 - (100 / (1 + rs));
-
-            state.RsiValues.Add(rsi);
-            if (state.RsiValues.Count > 50) state.RsiValues.RemoveAt(0);
-
-            return Math.Round(rsi, 2);
-        }
-
-        private string DetectRsiDivergence(List<Candle> candles, RsiState state, int lookback)
-        {
-            if (candles.Count < lookback || state.RsiValues.Count < lookback) return "N/A";
-
-            var relevantCandles = candles.TakeLast(lookback).ToList();
-            var relevantRsi = state.RsiValues.TakeLast(lookback).ToList();
-            int swingWindow = 3;
-
-            var swingHighs = FindSwingPoints(relevantCandles, relevantRsi, isHigh: true, swingWindow);
-            if (swingHighs.Count >= 2)
-            {
-                var high1 = swingHighs[0];
-                var high2 = swingHighs[1];
-                if (high1.price > high2.price && high1.indicator < high2.indicator)
-                {
-                    return "Bearish Divergence";
-                }
-            }
-
-            var swingLows = FindSwingPoints(relevantCandles, relevantRsi, isHigh: false, swingWindow);
-            if (swingLows.Count >= 2)
-            {
-                var low1 = swingLows[0];
-                var low2 = swingLows[1];
-                if (low1.price < low2.price && low1.indicator > low2.indicator)
-                {
-                    return "Bullish Divergence";
-                }
-            }
-
-            return "Neutral";
-        }
-
-        private decimal CalculateObv(List<Candle> candles, ObvState state)
-        {
-            if (candles.Count < 2) return 0m;
-
-            var lastCandle = candles.Last();
-            var secondLastCandle = candles[candles.Count - 2];
-
-            if (lastCandle.Close > secondLastCandle.Close)
-            {
-                state.CurrentObv += lastCandle.Volume;
-            }
-            else if (lastCandle.Close < secondLastCandle.Close)
-            {
-                state.CurrentObv -= lastCandle.Volume;
-            }
-
-            state.ObvValues.Add(state.CurrentObv);
-            if (state.ObvValues.Count > 50) state.ObvValues.RemoveAt(0);
-
-            return state.CurrentObv;
-        }
-
-        private string CalculateObvSignal(List<Candle> candles, ObvState state, int period)
-        {
-            if (state.ObvValues.Count < period) return "Building History...";
-
-            var currentObv = state.CurrentObv;
-            var previousObv = state.ObvValues.Count > 1 ? state.ObvValues[^2] : 0;
-
-            var sma = state.ObvValues.TakeLast(period).Average();
-            var previousSma = state.ObvValues.SkipLast(1).TakeLast(period).Average();
-            state.CurrentMovingAverage = sma;
-
-            bool wasBelow = previousObv < previousSma;
-            bool isAbove = currentObv > sma;
-            if (isAbove && wasBelow) return "Bullish Cross";
-
-            bool wasAbove = previousObv > previousSma;
-            bool isBelow = currentObv < sma;
-            if (isBelow && wasAbove) return "Bearish Cross";
-
-            if (isAbove) return "Trending Up";
-            if (isBelow) return "Trending Down";
-
-            return "Neutral";
-        }
-
-        private string DetectObvDivergence(List<Candle> candles, ObvState state, int lookback)
-        {
-            if (candles.Count < lookback || state.ObvValues.Count < lookback) return "N/A";
-
-            var relevantCandles = candles.TakeLast(lookback).ToList();
-            var relevantObv = state.ObvValues.TakeLast(lookback).ToList();
-            int swingWindow = 3;
-
-            var swingHighs = FindSwingPoints(relevantCandles, relevantObv, isHigh: true, swingWindow);
-            if (swingHighs.Count >= 2)
-            {
-                var high1 = swingHighs[0];
-                var high2 = swingHighs[1];
-                if (high1.price > high2.price && high1.indicator < high2.indicator)
-                {
-                    return "Bearish Divergence";
-                }
-            }
-
-            var swingLows = FindSwingPoints(relevantCandles, relevantObv, isHigh: false, swingWindow);
-            if (swingLows.Count >= 2)
-            {
-                var low1 = swingLows[0];
-                var low2 = swingLows[1];
-                if (low1.price < low2.price && low1.indicator > low2.indicator)
-                {
-                    return "Bullish Divergence";
-                }
-            }
-
-            return "Neutral";
-        }
-
-
-        private List<(decimal price, decimal indicator)> FindSwingPoints(List<Candle> candles, List<decimal> indicatorValues, bool isHigh, int window)
-        {
-            var swingPoints = new List<(decimal price, decimal indicator)>();
-            for (int i = window; i < candles.Count - window; i++)
-            {
-                var currentPrice = isHigh ? candles[i].High : candles[i].Low;
-                bool isSwing = true;
-                for (int j = 1; j <= window; j++)
-                {
-                    var prevPrice = isHigh ? candles[i - j].High : candles[i - j].Low;
-                    var nextPrice = isHigh ? candles[i + j].High : candles[i + j].Low;
-                    if ((isHigh && (currentPrice < prevPrice || currentPrice < nextPrice)) ||
-                        (!isHigh && (currentPrice > prevPrice || currentPrice > nextPrice)))
-                    {
-                        isSwing = false;
-                        break;
-                    }
-                }
-                if (isSwing)
-                {
-                    swingPoints.Add((currentPrice, indicatorValues[i]));
-                }
-            }
-            return swingPoints.TakeLast(2).ToList();
-        }
-
-        private decimal CalculateAtr(List<Candle> candles, AtrState state, int period)
-        {
-            if (candles.Count < period) return 0m;
-
-            var trueRanges = new List<decimal>();
-            for (int i = 1; i < candles.Count; i++)
-            {
-                var high = candles[i].High;
-                var low = candles[i].Low;
-                var prevClose = candles[i - 1].Close;
-
-                var tr = Math.Max(high - low, Math.Abs(high - prevClose));
-                tr = Math.Max(tr, Math.Abs(low - prevClose));
-                trueRanges.Add(tr);
-            }
-
-            if (!trueRanges.Any()) return 0m;
-
-            if (state.CurrentAtr == 0)
-            {
-                state.CurrentAtr = trueRanges.Take(period).Average();
-            }
-            else
-            {
-                var lastTr = trueRanges.Last();
-                state.CurrentAtr = ((state.CurrentAtr * (period - 1)) + lastTr) / period;
-            }
-
-            state.AtrValues.Add(state.CurrentAtr);
-            if (state.AtrValues.Count > 20) state.AtrValues.RemoveAt(0);
-
-            return Math.Round(state.CurrentAtr, 2);
-        }
-
-        private string GetAtrSignal(decimal currentAtr, AtrState state, int smaPeriod)
-        {
-            if (state.AtrValues.Count < smaPeriod) return "N/A";
-
-            var smaOfAtr = state.AtrValues.TakeLast(smaPeriod).Average();
-            var previousAtr = state.AtrValues.Count > 1 ? state.AtrValues[^2] : 0;
-            var previousSmaOfAtr = state.AtrValues.Count > smaPeriod ? state.AtrValues.SkipLast(1).TakeLast(smaPeriod).Average() : 0;
-
-            bool wasBelow = previousAtr < previousSmaOfAtr;
-            bool isAbove = currentAtr > smaOfAtr;
-
-            if (isAbove && wasBelow)
-            {
-                return "Vol Expanding";
-            }
-
-            bool wasAbove = previousAtr > previousSmaOfAtr;
-            bool isBelow = currentAtr < smaOfAtr;
-
-            if (isBelow && wasAbove)
-            {
-                return "Vol Contracting";
-            }
-
-            return isAbove ? "High Vol" : "Low Vol";
-        }
-
-
-        private (string priceVsVwap, string priceVsClose, string dayRange) CalculatePriceActionSignals(DashboardInstrument instrument, decimal vwap)
-        {
-            string priceVsVwap = "Neutral";
-            if (vwap > 0)
-            {
-                decimal tolerance = vwap * 0.0005m; // 0.05% tolerance
-                if (instrument.LTP > vwap + tolerance) priceVsVwap = "Above VWAP";
-                else if (instrument.LTP < vwap - tolerance) priceVsVwap = "Below VWAP";
-                else priceVsVwap = "At VWAP";
-            }
-
-            string priceVsClose = "Neutral";
-            if (instrument.Close > 0)
-            {
-                if (instrument.LTP > instrument.Close) priceVsClose = "Above Close";
-                else if (instrument.LTP < instrument.Close) priceVsClose = "Below Close";
-            }
-
-            string dayRange = "Neutral";
-            decimal range = instrument.High - instrument.Low;
-            if (range > 0)
-            {
-                decimal positionInDayRange = (instrument.LTP - instrument.Low) / range;
-                if (positionInDayRange > 0.8m) dayRange = "Near High";
-                else if (positionInDayRange < 0.2m) dayRange = "Near Low";
-                else dayRange = "Mid-Range";
-            }
-
-            return (priceVsVwap, priceVsClose, dayRange);
-        }
-
-        private string CalculateCustomLevelSignal(DashboardInstrument instrument)
-        {
-            if (instrument.SegmentId != 0) return "N/A";
-
-            var levels = _settingsViewModel.GetLevelsForIndex(instrument.Symbol);
-            if (levels == null) return "No Levels Set";
-
-            if (!_customLevelStates.ContainsKey(instrument.Symbol))
-            {
-                _customLevelStates[instrument.Symbol] = new IntradayIvState.CustomLevelState();
-            }
-            var state = _customLevelStates[instrument.Symbol];
-
-            decimal ltp = instrument.LTP;
-            IntradayIvState.PriceZone currentZone;
-
-            if (ltp > levels.NoTradeUpperBand) currentZone = IntradayIvState.PriceZone.Above;
-            else if (ltp < levels.NoTradeLowerBand) currentZone = IntradayIvState.PriceZone.Below;
-            else currentZone = IntradayIvState.PriceZone.Inside;
-
-            if (currentZone != state.LastZone)
-            {
-                if (state.LastZone == IntradayIvState.PriceZone.Inside && currentZone == IntradayIvState.PriceZone.Above) state.BreakoutCount++;
-                else if (state.LastZone == IntradayIvState.PriceZone.Inside && currentZone == IntradayIvState.PriceZone.Below) state.BreakdownCount++;
-                state.LastZone = currentZone;
-            }
-
-            switch (currentZone)
-            {
-                case IntradayIvState.PriceZone.Inside: return "No trade zone";
-                case IntradayIvState.PriceZone.Above: return $"{GetOrdinal(state.BreakoutCount)} Breakout";
-                case IntradayIvState.PriceZone.Below: return $"{GetOrdinal(state.BreakdownCount)} Breakdown";
-                default: return "N/A";
-            }
-        }
-
-        private string RecognizeCandlestickPattern(List<Candle> candles, AnalysisResult analysisResult)
-        {
-            if (candles.Count < 3) return "N/A";
-
-            var c1 = candles.Last();
-            var c2 = candles[candles.Count - 2];
-            var c3 = candles[candles.Count - 3];
-
-            string volInfo = GetVolumeConfirmation(c1, c2);
-            string pattern = "N/A";
-
-            decimal body1 = Math.Abs(c1.Open - c1.Close);
-            decimal range1 = c1.High - c1.Low;
-            decimal upperShadow1 = c1.High - Math.Max(c1.Open, c1.Close);
-            decimal lowerShadow1 = Math.Min(c1.Open, c1.Close) - c1.Low;
-
-            if (range1 > 0)
-            {
-                if (body1 / range1 < 0.15m) pattern = "Neutral Doji";
-                if (lowerShadow1 > body1 * 1.8m && upperShadow1 < body1 * 0.8m) pattern = c1.Close > c1.Open ? "Bullish Hammer" : "Bearish Hanging Man";
-                if (upperShadow1 > body1 * 1.8m && lowerShadow1 < body1 * 0.8m) pattern = c1.Close > c1.Open ? "Bullish Inv Hammer" : "Bearish Shooting Star";
-                if (body1 / range1 > 0.9m) pattern = c1.Close > c1.Open ? "Bullish Marubozu" : "Bearish Marubozu";
-            }
-
-            if (c1.Close > c2.Open && c1.Open < c2.Close && c1.Close > c1.Open && c2.Close < c2.Open) pattern = "Bullish Engulfing";
-            if (c1.Open > c2.Close && c1.Close < c2.Open && c1.Close < c1.Open && c2.Close > c2.Open) pattern = "Bearish Engulfing";
-
-            bool isMorningStar = c3.Close < c3.Open && Math.Max(c2.Open, c2.Close) < c3.Close && c1.Close > c1.Open && c1.Close > (c3.Open + c3.Close) / 2;
-            if (isMorningStar) pattern = "Bullish Morning Star";
-
-            bool isEveningStar = c3.Close > c3.Open && Math.Min(c2.Open, c2.Close) > c3.Close && c1.Close < c1.Open && c1.Close < (c3.Open + c3.Close) / 2;
-            if (isEveningStar) pattern = "Bearish Evening Star";
-
-            if (pattern == "N/A") return "N/A";
-
-            string context = "";
-            if (pattern.Contains("Bullish"))
-            {
-                if (analysisResult.DayRangeSignal == "Near Low") context = " at Day's Low";
-                else if (analysisResult.VwapBandSignal == "At Lower Band") context = " at VWAP Band";
-                else if (analysisResult.MarketProfileSignal.Contains("VAL")) context = " at Value Area Low";
-            }
-            else if (pattern.Contains("Bearish"))
-            {
-                if (analysisResult.DayRangeSignal == "Near High") context = " at Day's High";
-                else if (analysisResult.VwapBandSignal == "At Upper Band") context = " at VWAP Band";
-                else if (analysisResult.MarketProfileSignal.Contains("VAH")) context = " at Value Area High";
-            }
-
-            return $"{pattern}{context}{volInfo}";
-        }
-
-
-        private string GetVolumeConfirmation(Candle current, Candle previous)
-        {
-            if (previous.Volume > 0)
-            {
-                decimal volChange = ((decimal)current.Volume - previous.Volume) / previous.Volume;
-                if (volChange > 0.2m)
-                {
-                    return $" (+{volChange:P0} Vol)";
-                }
-            }
-            return "";
-        }
-
-        private string GetOrdinal(int num)
-        {
-            if (num <= 0) return num.ToString();
-            switch (num % 100)
-            {
-                case 11: case 12: case 13: return num + "th";
-            }
-            switch (num % 10)
-            {
-                case 1: return num + "st";
-                case 2: return num + "nd";
-                case 3: return num + "rd";
-                default: return num + "th";
-            }
-        }
-
-        private string GetInstrumentGroup(DashboardInstrument instrument)
-        {
-            if (instrument.SegmentId == 0) return "Indices";
-            if (instrument.IsFuture) return "Futures";
-            if (instrument.DisplayName.ToUpper().Contains("CALL") || instrument.DisplayName.ToUpper().Contains("PUT")) return "Options";
-            return "Stocks";
         }
 
         #endregion

@@ -110,11 +110,13 @@ namespace TradingConsole.Wpf.Services
         public List<decimal> IvPercentileHistory { get; } = new List<decimal>();
 
         internal enum PriceZone { Inside, Above, Below }
-        internal class CustomLevelState
+
+        // --- FIX: This nested class must be public to be used in a public property of AnalysisStateManager ---
+        public class CustomLevelState
         {
             public int BreakoutCount { get; set; }
             public int BreakdownCount { get; set; }
-            public PriceZone LastZone { get; set; } = PriceZone.Inside;
+            internal PriceZone LastZone { get; set; } = PriceZone.Inside;
         }
     }
 

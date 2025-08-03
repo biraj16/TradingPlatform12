@@ -249,7 +249,6 @@ namespace TradingConsole.Wpf.ViewModels
 
         private void Settings_SettingsSaved(object? sender, EventArgs e)
         {
-            _analysisService.UpdateParametersFromSettings();
         }
 
         private void OnAnalysisResultUpdated(AnalysisResult result)
@@ -727,12 +726,8 @@ namespace TradingConsole.Wpf.ViewModels
                 await LoadOrdersAsync();
 
                 _optionChainRefreshTimer = new Timer(async _ => await RefreshOptionChainDataAsync(), null, TimeSpan.FromSeconds(30), TimeSpan.FromSeconds(15));
-
-                // --- REVERTED: The IV refresh timer is set back to its original 30-second interval as requested. ---
                 _ivRefreshTimer = new Timer(async _ => await LoadInitialOptionChainsAsync(), null, TimeSpan.FromSeconds(30), TimeSpan.FromSeconds(30));
-
                 _uiUpdateTimer.Change(TimeSpan.FromSeconds(1), TimeSpan.FromMilliseconds(200));
-
 
                 Application.Current.Dispatcher.InvokeAsync(() => { SelectedIndex = Indices.FirstOrDefault(i => i.Name == "Nifty 50"); });
             }
@@ -1376,7 +1371,6 @@ namespace TradingConsole.Wpf.ViewModels
                             SecurityId = ceInfo.SecurityId,
                             FeedType = FeedTypeQuote,
                             SegmentId = optionSegmentId,
-                            // --- FIX: Use the correct underlying symbol for lookups ---
                             UnderlyingSymbol = scripMasterUnderlying,
                             InstrumentType = ceInfo.InstrumentType,
                             StrikePrice = ceInfo.StrikePrice,
@@ -1397,12 +1391,11 @@ namespace TradingConsole.Wpf.ViewModels
                             SecurityId = peInfo.SecurityId,
                             FeedType = FeedTypeQuote,
                             SegmentId = optionSegmentId,
-                            // --- FIX: Use the correct underlying symbol for lookups ---
                             UnderlyingSymbol = scripMasterUnderlying,
                             InstrumentType = peInfo.InstrumentType,
                             StrikePrice = peInfo.StrikePrice,
                             OptionType = peInfo.OptionType,
-                            ExpiryDate = peInfo.ExpiryDate
+                            ExpiryDate = ceInfo.ExpiryDate
                         };
                         newOptionInstruments.Add(inst);
                         newSubscriptions[inst.SecurityId] = inst.SegmentId;
