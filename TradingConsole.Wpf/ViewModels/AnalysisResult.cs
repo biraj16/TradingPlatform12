@@ -1,4 +1,4 @@
-﻿// In TradingConsole.Wpf/ViewModels/AnalysisResult.cs
+﻿// TradingConsole.Wpf/ViewModels/AnalysisResult.cs
 using System.Collections.Generic;
 using System.Linq;
 using TradingConsole.Core.Models;
@@ -6,34 +6,6 @@ using TradingConsole.Wpf.Services;
 
 namespace TradingConsole.Wpf.ViewModels
 {
-    public class IndexSignal : ObservableModel
-    {
-        private string _bias = "Neutral";
-        public string Bias { get => _bias; set => SetProperty(ref _bias, value); }
-
-        private string _trendDirection = "Sideways";
-        public string TrendDirection { get => _trendDirection; set => SetProperty(ref _trendDirection, value); }
-
-        private string _trendConviction = "Low";
-        public string TrendConviction { get => _trendConviction; set => SetProperty(ref _trendConviction, value); }
-
-        private string _momentum = "Neutral";
-        public string Momentum { get => _momentum; set => SetProperty(ref _momentum, value); }
-
-        private string _volatility = "Stable";
-        public string Volatility { get => _volatility; set => SetProperty(ref _volatility, value); }
-
-        private string _overallSignal = "Observe";
-        public string OverallSignal { get => _overallSignal; set => SetProperty(ref _overallSignal, value); }
-
-        private List<string> _supportingFactors = new List<string>();
-        public List<string> SupportingFactors { get => _supportingFactors; set => SetProperty(ref _supportingFactors, value); }
-
-        private List<string> _contradictingFactors = new List<string>();
-        public List<string> ContradictingFactors { get => _contradictingFactors; set => SetProperty(ref _contradictingFactors, value); }
-    }
-
-
     public class AnalysisResult : ObservableModel
     {
         public void Update(AnalysisResult source)
@@ -99,10 +71,11 @@ namespace TradingConsole.Wpf.ViewModels
             ConvictionScore = source.ConvictionScore;
             BullishDrivers = source.BullishDrivers;
             BearishDrivers = source.BearishDrivers;
-            IndexSignal = source.IndexSignal;
             MarketThesis = source.MarketThesis;
             DominantPlayer = source.DominantPlayer;
             VolatilityStateSignal = source.VolatilityStateSignal;
+            MarketRegime = source.MarketRegime; // NEW
+            IntradayIvSpikeSignal = source.IntradayIvSpikeSignal; // NEW
         }
 
         private bool _isExpanded;
@@ -247,7 +220,7 @@ namespace TradingConsole.Wpf.ViewModels
         private string _finalTradeSignal = "Analyzing...";
         public string FinalTradeSignal { get => _finalTradeSignal; set => SetProperty(ref _finalTradeSignal, value); }
 
-        private string _primarySignal = "Neutral";
+        private string _primarySignal = "Initializing";
         public string PrimarySignal { get => _primarySignal; set => SetProperty(ref _primarySignal, value); }
 
 
@@ -281,9 +254,6 @@ namespace TradingConsole.Wpf.ViewModels
         private string _marketNarrative = "Analyzing...";
         public string MarketNarrative { get => _marketNarrative; set => SetProperty(ref _marketNarrative, value); }
 
-        private IndexSignal _indexSignal = new IndexSignal();
-        public IndexSignal IndexSignal { get => _indexSignal; set => SetProperty(ref _indexSignal, value); }
-
         private MarketThesis _marketThesis = MarketThesis.Indeterminate;
         public MarketThesis MarketThesis { get => _marketThesis; set => SetProperty(ref _marketThesis, value); }
 
@@ -293,21 +263,28 @@ namespace TradingConsole.Wpf.ViewModels
         private string _volatilityStateSignal = "N/A";
         public string VolatilityStateSignal { get => _volatilityStateSignal; set => SetProperty(ref _volatilityStateSignal, value); }
 
+        // --- NEW PROPERTIES ---
+        private string _marketRegime = "N/A";
+        public string MarketRegime { get => _marketRegime; set => SetProperty(ref _marketRegime, value); }
+
+        private string _intradayIvSpikeSignal = "N/A";
+        public string IntradayIvSpikeSignal { get => _intradayIvSpikeSignal; set => SetProperty(ref _intradayIvSpikeSignal, value); }
+
 
         public string FullGroupIdentifier
         {
             get
             {
-                if (InstrumentGroup == "Options")
+                if (InstrumentGroup == "OPTIDX" || InstrumentGroup == "OPTSTK")
                 {
-                    if (UnderlyingGroup.ToUpper().Contains("NIFTY") && !UnderlyingGroup.ToUpper().Contains("BANK")) return "Nifty Options";
-                    if (UnderlyingGroup.ToUpper().Contains("BANKNIFTY")) return "Banknifty Options";
-                    if (UnderlyingGroup.ToUpper().Contains("SENSEX")) return "Sensex Options";
+                    if (Symbol.ToUpper().Contains("NIFTY") && !Symbol.ToUpper().Contains("BANK")) return "Nifty Options";
+                    if (Symbol.ToUpper().Contains("BANKNIFTY")) return "Banknifty Options";
+                    if (Symbol.ToUpper().Contains("SENSEX")) return "Sensex Options";
                     return "Other Stock Options";
                 }
-                if (InstrumentGroup == "Futures")
+                if (InstrumentGroup == "FUTIDX" || InstrumentGroup == "FUTSTK")
                 {
-                    if (UnderlyingGroup.ToUpper().Contains("NIFTY") || UnderlyingGroup.ToUpper().Contains("BANKNIFTY") || UnderlyingGroup.ToUpper().Contains("SENSEX"))
+                    if (Symbol.ToUpper().Contains("NIFTY") || Symbol.ToUpper().Contains("BANKNIFTY") || Symbol.ToUpper().Contains("SENSEX"))
                         return "Index Futures";
                     return "Stock Futures";
                 }

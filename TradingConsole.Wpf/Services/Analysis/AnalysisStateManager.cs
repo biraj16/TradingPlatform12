@@ -1,4 +1,5 @@
 ﻿// TradingConsole.Wpf/Services/Analysis/AnalysisStateManager.cs
+// --- MODIFIED: Added MarketPhase state management ---
 using System;
 using System.Collections.Generic;
 using TradingConsole.Core.Models;
@@ -12,6 +13,9 @@ namespace TradingConsole.Wpf.Services.Analysis
     /// </summary>
     public class AnalysisStateManager
     {
+        // --- NEW: Added state for the current market phase ---
+        public MarketPhase CurrentMarketPhase { get; set; } = MarketPhase.PreOpen;
+
         public Dictionary<string, AnalysisResult> AnalysisResults { get; } = new();
         public Dictionary<string, MarketProfile> MarketProfiles { get; } = new();
         public Dictionary<string, List<MarketProfileData>> HistoricalMarketProfiles { get; } = new();
@@ -40,19 +44,17 @@ namespace TradingConsole.Wpf.Services.Analysis
         private readonly List<TimeSpan> _timeframes = new()
         {
             TimeSpan.FromMinutes(1),
+            TimeSpan.FromMinutes(3), // Added 3-min for OI analysis
             TimeSpan.FromMinutes(5),
             TimeSpan.FromMinutes(15)
         };
 
-        /// <summary>
-        /// Initializes all necessary dictionaries and state containers for a new instrument.
-        /// </summary>
         public void InitializeStateForInstrument(string securityId, string symbol, string instrumentType)
         {
             if (BackfilledInstruments.Contains(securityId)) return;
 
             BackfilledInstruments.Add(securityId);
-            AnalysisResults[securityId] = new AnalysisResult { SecurityId = securityId, Symbol = symbol };
+            AnalysisResults[securityId] = new AnalysisResult { SecurityId = securityId, Symbol = symbol, InstrumentGroup = instrumentType };
             TickAnalysisState[securityId] = (0, 0, new List<decimal>());
             MultiTimeframeCandles[securityId] = new Dictionary<TimeSpan, List<Candle>>();
             MultiTimeframePriceEmaState[securityId] = new Dictionary<TimeSpan, EmaState>();
@@ -80,9 +82,6 @@ namespace TradingConsole.Wpf.Services.Analysis
             }
         }
 
-        /// <summary>
-        /// Retrieves the candle list for a specific instrument and timeframe.
-        /// </summary>
         public List<Candle>? GetCandles(string securityId, TimeSpan timeframe)
         {
             if (MultiTimeframeCandles.TryGetValue(securityId, out var timeframes) &&
@@ -93,9 +92,6 @@ namespace TradingConsole.Wpf.Services.Analysis
             return null;
         }
 
-        /// <summary>
-        /// Retrieves the current analysis result for a specific instrument.
-        /// </summary>
         public AnalysisResult GetResult(string securityId)
         {
             if (!AnalysisResults.ContainsKey(securityId))

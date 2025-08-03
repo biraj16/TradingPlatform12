@@ -1,4 +1,5 @@
-﻿// In TradingConsole.Wpf/Services/AnalysisDataModels.cs
+﻿// TradingConsole.Wpf/Services/AnalysisDataModels.cs
+// --- MODIFIED: Added MarketPhase enum and enhanced data models ---
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -7,6 +8,17 @@ using TradingConsole.Core.Models;
 namespace TradingConsole.Wpf.Services
 {
     #region Core Data Models
+
+    /// <summary>
+    /// NEW: Defines the current phase of the trading session.
+    /// </summary>
+    public enum MarketPhase
+    {
+        PreOpen,
+        Opening, // First 30 minutes, signals are de-weighted
+        Normal,
+        Closing // Last 30 minutes
+    }
 
     /// <summary>
     /// Represents a single candlestick with price, volume, and open interest data.
@@ -35,70 +47,20 @@ namespace TradingConsole.Wpf.Services
 
     #region Indicator State Models
 
-    /// <summary>
-    /// Holds the running state for Exponential Moving Average (EMA) calculations.
-    /// </summary>
-    public class EmaState
-    {
-        public decimal CurrentShortEma { get; set; }
-        public decimal CurrentLongEma { get; set; }
-    }
-
-    /// <summary>
-    /// Holds the running state for Relative Strength Index (RSI) calculations.
-    /// </summary>
-    public class RsiState
-    {
-        public decimal AvgGain { get; set; }
-        public decimal AvgLoss { get; set; }
-        public List<decimal> RsiValues { get; } = new List<decimal>();
-    }
-
-    /// <summary>
-    /// Holds the running state for Average True Range (ATR) calculations.
-    /// </summary>
-    public class AtrState
-    {
-        public decimal CurrentAtr { get; set; }
-        public List<decimal> AtrValues { get; } = new List<decimal>();
-    }
-
-    /// <summary>
-    /// Holds the running state for On-Balance Volume (OBV) calculations.
-    /// </summary>
-    public class ObvState
-    {
-        public decimal CurrentObv { get; set; }
-        public List<decimal> ObvValues { get; } = new List<decimal>();
-        public decimal CurrentMovingAverage { get; set; }
-    }
+    // EmaState, RsiState, AtrState, ObvState remain unchanged...
+    public class EmaState { public decimal CurrentShortEma { get; set; } public decimal CurrentLongEma { get; set; } }
+    public class RsiState { public decimal AvgGain { get; set; } public decimal AvgLoss { get; set; } public List<decimal> RsiValues { get; } = new List<decimal>(); }
+    public class AtrState { public decimal CurrentAtr { get; set; } public List<decimal> AtrValues { get; } = new List<decimal>(); }
+    public class ObvState { public decimal CurrentObv { get; set; } public List<decimal> ObvValues { get; } = new List<decimal>(); public decimal CurrentMovingAverage { get; set; } }
 
     #endregion
 
     #region Market Context Models
 
-    /// <summary>
-    /// Holds the state for analyzing relative strength between spot and futures to determine institutional intent.
-    /// </summary>
-    public class RelativeStrengthState
-    {
-        public List<decimal> BasisDeltaHistory { get; } = new List<decimal>();
-        public List<decimal> OptionsDeltaHistory { get; } = new List<decimal>();
-        public string InstitutionalIntentSignal { get; set; } = "Neutral";
-    }
+    // RelativeStrengthState, IvSkewState remain unchanged...
+    public class RelativeStrengthState { public List<decimal> BasisDeltaHistory { get; } = new List<decimal>(); public List<decimal> OptionsDeltaHistory { get; } = new List<decimal>(); public string InstitutionalIntentSignal { get; set; } = "Neutral"; }
+    public class IvSkewState { public List<decimal> AtmCallIvHistory { get; } = new List<decimal>(); public List<decimal> AtmPutIvHistory { get; } = new List<decimal>(); public List<decimal> OtmCallIvHistory { get; } = new List<decimal>(); public List<decimal> OtmPutIvHistory { get; } = new List<decimal>(); public List<decimal> PutSkewSlopeHistory { get; } = new List<decimal>(); public List<decimal> CallSkewSlopeHistory { get; } = new List<decimal>(); }
 
-    /// <summary>
-    /// Holds the state for analyzing Implied Volatility (IV) skew between calls and puts.
-    /// </summary>
-    public class IvSkewState
-    {
-        public List<decimal> AtmCallIvHistory { get; } = new List<decimal>();
-        public List<decimal> AtmPutIvHistory { get; } = new List<decimal>();
-        public List<decimal> OtmCallIvHistory { get; } = new List<decimal>();
-        public List<decimal> OtmPutIvHistory { get; } = new List<decimal>();
-        public List<decimal> PutSkewSlopeHistory { get; } = new List<decimal>();
-        public List<decimal> CallSkewSlopeHistory { get; } = new List<decimal>();
-    }
 
     /// <summary>
     /// Holds the state for intraday Implied Volatility (IV) analysis, including daily range and percentile history.
@@ -109,15 +71,13 @@ namespace TradingConsole.Wpf.Services
         public decimal DayLowIv { get; set; } = decimal.MaxValue;
         public List<decimal> IvPercentileHistory { get; } = new List<decimal>();
 
-        internal enum PriceZone { Inside, Above, Below }
+        /// <summary>
+        /// NEW: Added a list to track recent IV values for spike detection.
+        /// </summary>
+        public List<decimal> IvHistory { get; } = new List<decimal>();
 
-        // --- FIX: This nested class must be public to be used in a public property of AnalysisStateManager ---
-        public class CustomLevelState
-        {
-            public int BreakoutCount { get; set; }
-            public int BreakdownCount { get; set; }
-            internal PriceZone LastZone { get; set; } = PriceZone.Inside;
-        }
+        internal enum PriceZone { Inside, Above, Below }
+        public class CustomLevelState { public int BreakoutCount { get; set; } public int BreakdownCount { get; set; } internal PriceZone LastZone { get; set; } = PriceZone.Inside; }
     }
 
     #endregion
@@ -130,7 +90,12 @@ namespace TradingConsole.Wpf.Services
     public class MarketProfile
     {
         public SortedDictionary<decimal, List<char>> TpoLevels { get; } = new SortedDictionary<decimal, List<char>>();
+
+        /// <summary>
+        /// NEW: Added VolumeLevels to store actual traded volume at each price, enabling true Volume Profile analysis.
+        /// </summary>
         public SortedDictionary<decimal, long> VolumeLevels { get; } = new SortedDictionary<decimal, long>();
+
         public TpoInfo TpoLevelsInfo { get; set; } = new TpoInfo();
         public VolumeProfileInfo VolumeProfileInfo { get; set; } = new VolumeProfileInfo();
         public decimal TickSize { get; }
@@ -147,12 +112,11 @@ namespace TradingConsole.Wpf.Services
         public TpoInfo DevelopingTpoLevels { get; set; } = new TpoInfo();
         public VolumeProfileInfo DevelopingVolumeProfile { get; set; } = new VolumeProfileInfo();
 
-
         public MarketProfile(decimal tickSize, DateTime sessionStartTime)
         {
             TickSize = tickSize;
             _sessionStartTime = sessionStartTime;
-            _initialBalanceEndTime = _sessionStartTime.AddMinutes(30);
+            _initialBalanceEndTime = _sessionStartTime.AddMinutes(60); // IB is typically the first hour
             Date = sessionStartTime.Date;
             InitialBalanceLow = decimal.MaxValue;
         }
@@ -185,15 +149,7 @@ namespace TradingConsole.Wpf.Services
         public MarketProfileData ToMarketProfileData()
         {
             var tpoCounts = this.TpoLevels.ToDictionary(kvp => kvp.Key, kvp => kvp.Value.Count);
-
-            return new MarketProfileData
-            {
-                Date = this.Date,
-                TpoLevelsInfo = this.DevelopingTpoLevels,
-                VolumeProfileInfo = this.DevelopingVolumeProfile,
-                TpoCounts = tpoCounts,
-                VolumeLevels = new Dictionary<decimal, long>(this.VolumeLevels)
-            };
+            return new MarketProfileData { Date = this.Date, TpoLevelsInfo = this.DevelopingTpoLevels, VolumeProfileInfo = this.DevelopingVolumeProfile, TpoCounts = tpoCounts, VolumeLevels = new Dictionary<decimal, long>(this.VolumeLevels) };
         }
     }
 

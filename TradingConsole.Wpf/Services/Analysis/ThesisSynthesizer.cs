@@ -1,4 +1,5 @@
 ﻿// TradingConsole.Wpf/Services/Analysis/ThesisSynthesizer.cs
+// --- MODIFIED: Complete overhaul of conviction scoring to use confluence and handle market phases/chop. ---
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -8,10 +9,6 @@ using TradingConsole.Wpf.ViewModels;
 
 namespace TradingConsole.Wpf.Services
 {
-    /// <summary>
-    /// Synthesizes a final trade signal and market thesis from various raw signals.
-    /// This is the highest level of the analysis engine, responsible for decision-making.
-    /// </summary>
     public class ThesisSynthesizer
     {
         private readonly SettingsViewModel _settingsViewModel;
@@ -29,36 +26,56 @@ namespace TradingConsole.Wpf.Services
 
         public void SynthesizeTradeSignal(AnalysisResult result)
         {
-            if (result.InstrumentGroup != "Indices") return;
+            if (result.InstrumentGroup != "INDEX") return;
 
+            // Step 1: Determine the high-level thesis and dominant player
             MarketThesis thesis = UpdateIntradayThesis(result);
             result.MarketThesis = thesis;
 
-            var (bullDrivers, bearDrivers, conviction) = CalculateConvictionScore(result, thesis);
+            // Step 2: Calculate conviction score using the new confluence-based model
+            var (bullDrivers, bearDrivers, conviction, isChoppy) = CalculateConfluenceScore(result, thesis);
             result.BullishDrivers = bullDrivers;
             result.BearishDrivers = bearDrivers;
+
+            // --- NEW: Handle Market Open Volatility ---
+            if (_stateManager.CurrentMarketPhase == MarketPhase.Opening)
+            {
+                conviction = (int)Math.Round(conviction * 0.5); // Reduce conviction by 50% during open
+            }
             result.ConvictionScore = conviction;
 
-            string playbook = "Neutral / Observe";
-            if (conviction >= 7) playbook = "Strong Bullish Conviction";
+            // Step 3: Determine final signal based on score and market condition
+            string playbook;
+            if (isChoppy)
+            {
+                playbook = "Choppy / Conflicting Signals";
+                thesis = MarketThesis.Choppy;
+                result.MarketThesis = thesis;
+            }
+            else if (conviction >= 7) playbook = "Strong Bullish Conviction";
             else if (conviction >= 3) playbook = "Moderate Bullish Conviction";
             else if (conviction <= -7) playbook = "Strong Bearish Conviction";
             else if (conviction <= -3) playbook = "Moderate Bearish Conviction";
+            else playbook = "Neutral / Observe";
 
             string newPrimarySignal = "Neutral";
-            if (conviction >= 3) newPrimarySignal = "Bullish";
-            else if (conviction <= -3) newPrimarySignal = "Bearish";
+            if (!isChoppy) // Do not generate primary signals in choppy markets
+            {
+                if (conviction >= 3) newPrimarySignal = "Bullish";
+                else if (conviction <= -3) newPrimarySignal = "Bearish";
+            }
 
+            // Step 4: Update result and log/notify if signal has changed
             string oldPrimarySignal = result.PrimarySignal;
             result.PrimarySignal = newPrimarySignal;
             result.FinalTradeSignal = playbook;
             result.MarketNarrative = GenerateMarketNarrative(result);
 
-            if (result.PrimarySignal != oldPrimarySignal)
+            if (result.PrimarySignal != oldPrimarySignal && oldPrimarySignal != "Initializing")
             {
                 if (_stateManager.LastSignalTime.TryGetValue(result.SecurityId, out var lastTime) && (DateTime.UtcNow - lastTime).TotalSeconds < 60)
                 {
-                    return;
+                    return; // Debounce signals to prevent rapid flipping
                 }
                 _stateManager.LastSignalTime[result.SecurityId] = DateTime.UtcNow;
 
@@ -67,128 +84,60 @@ namespace TradingConsole.Wpf.Services
             }
         }
 
-        private MarketThesis UpdateIntradayThesis(AnalysisResult result)
+        /// <summary>
+        /// REVISED: Calculates conviction score by grouping correlated signals to avoid double-counting
+        /// and explicitly detects choppy market conditions.
+        /// </summary>
+        private (List<string> BullishDrivers, List<string> BearishDrivers, int Score, bool IsChoppy) CalculateConfluenceScore(AnalysisResult r, MarketThesis thesis)
         {
-            DominantPlayer player = DetermineDominantPlayer(result);
-            result.DominantPlayer = player;
+            var bullDrivers = new List<string>();
+            var bearDrivers = new List<string>();
 
-            if (result.MarketStructure == "Trending Up")
-            {
-                if (player == DominantPlayer.Buyers) return MarketThesis.Bullish_Trend;
-                if (player == DominantPlayer.Sellers) return MarketThesis.Bullish_Rotation;
-                return MarketThesis.Bullish_Trend;
-            }
+            // Define signal groups to prevent correlation issues
+            int structureScore = 0;
+            int momentumScore = 0;
+            int confirmationScore = 0;
 
-            if (result.MarketStructure == "Trending Down")
-            {
-                if (player == DominantPlayer.Sellers) return MarketThesis.Bearish_Trend;
-                if (player == DominantPlayer.Buyers) return MarketThesis.Bearish_Rotation;
-                return MarketThesis.Bearish_Trend;
-            }
+            // --- Group 1: Market Structure (Long-Term Context) ---
+            if (r.MarketStructure == "Trending Up") structureScore += 3;
+            if (r.MarketStructure == "Trending Down") structureScore -= 3;
+            if (r.YesterdayProfileSignal == "Trading Above Y-VAH") structureScore += 2;
+            if (r.YesterdayProfileSignal == "Trading Below Y-VAL") structureScore -= 2;
 
-            return MarketThesis.Balancing;
+            // --- Group 2: Intraday Momentum ---
+            if (r.PriceVsVwapSignal == "Above VWAP") momentumScore += 2;
+            if (r.PriceVsVwapSignal == "Below VWAP") momentumScore -= 2;
+            if (r.EmaSignal5Min == "Bullish Cross") momentumScore += 2;
+            if (r.EmaSignal5Min == "Bearish Cross") momentumScore -= 2;
+            if (r.CandleSignal5Min.Contains("Bullish")) momentumScore += 1;
+            if (r.CandleSignal5Min.Contains("Bearish")) momentumScore -= 1;
+
+            // --- Group 3: Confirmation (Volume, OI, Volatility) ---
+            if (r.VolumeSignal == "Volume Burst" && r.LTP > r.Vwap) confirmationScore += 2;
+            if (r.VolumeSignal == "Volume Burst" && r.LTP < r.Vwap) confirmationScore -= 2;
+            if (r.OiSignal == "Long Buildup") confirmationScore += 2;
+            if (r.OiSignal == "Short Buildup") confirmationScore -= 2;
+            if (r.IntradayIvSpikeSignal == "IV Spike Up") confirmationScore += 1; // IV spike can confirm a breakout
+
+            // --- NEW: Logic to detect conflicting signals (chop) ---
+            bool isChoppy = (Math.Abs(structureScore) < 2 && Math.Abs(momentumScore) < 2) || // No clear direction
+                            (structureScore > 2 && momentumScore < -2) || // Structure is bullish but momentum is bearish
+                            (structureScore < -2 && momentumScore > 2);  // Structure is bearish but momentum is bullish
+
+            // Combine scores based on confluence
+            int finalScore = structureScore + momentumScore + confirmationScore;
+
+            // Populate driver lists for UI display (simplified for brevity)
+            if (structureScore > 0) bullDrivers.Add($"Structure Bullish (+{structureScore})"); else if (structureScore < 0) bearDrivers.Add($"Structure Bearish ({structureScore})");
+            // --- THIS IS THE CORRECTED LINE ---
+            if (momentumScore > 0) bullDrivers.Add($"Momentum Bullish (+{momentumScore})"); else if (momentumScore < 0) bearDrivers.Add($"Momentum Bearish ({momentumScore})");
+            if (confirmationScore > 0) bullDrivers.Add($"Confirmation Bullish (+{confirmationScore})"); else if (confirmationScore < 0) bearDrivers.Add($"Confirmation Bearish ({confirmationScore})");
+
+            return (bullDrivers, bearDrivers, finalScore, isChoppy);
         }
 
-        private DominantPlayer DetermineDominantPlayer(AnalysisResult result)
-        {
-            int buyerEvidence = 0;
-            int sellerEvidence = 0;
-
-            if (result.PriceVsVwapSignal == "Above VWAP") buyerEvidence++;
-            if (result.PriceVsVwapSignal == "Below VWAP") sellerEvidence++;
-            if (result.EmaSignal5Min == "Bullish Cross") buyerEvidence++;
-            if (result.EmaSignal5Min == "Bearish Cross") sellerEvidence++;
-            if (result.OiSignal == "Long Buildup") buyerEvidence++;
-            if (result.OiSignal == "Short Buildup") sellerEvidence++;
-
-            if (buyerEvidence > sellerEvidence) return DominantPlayer.Buyers;
-            if (sellerEvidence > buyerEvidence) return DominantPlayer.Sellers;
-            return DominantPlayer.Balance;
-        }
-
-        private (List<string> BullishDrivers, List<string> BearishDrivers, int Score) CalculateConvictionScore(AnalysisResult r, MarketThesis thesis)
-        {
-            var bullDrivers = _settingsViewModel.Strategy.TrendContinuation_Bullish.Where(d => d.IsEnabled).ToList();
-            var bearDrivers = _settingsViewModel.Strategy.TrendContinuation_Bearish.Where(d => d.IsEnabled).ToList();
-
-            int score = 0;
-            var triggeredBullDrivers = new List<string>();
-            var triggeredBearDrivers = new List<string>();
-
-            foreach (var driver in bullDrivers)
-            {
-                if (CheckDriverCondition(r, driver.Name))
-                {
-                    score += driver.Weight;
-                    triggeredBullDrivers.Add($"{driver.Name} (+{driver.Weight})");
-                }
-            }
-
-            foreach (var driver in bearDrivers)
-            {
-                if (CheckDriverCondition(r, driver.Name))
-                {
-                    score -= driver.Weight;
-                    triggeredBearDrivers.Add($"{driver.Name} (-{driver.Weight})");
-                }
-            }
-            return (triggeredBullDrivers, triggeredBearDrivers, score);
-        }
-
-        private bool CheckDriverCondition(AnalysisResult r, string driverName)
-        {
-            switch (driverName)
-            {
-                case "Confluence Momentum (Bullish)":
-                    {
-                        bool isPattern = r.CandleSignal5Min.Contains("Bullish");
-                        bool isAtSupport = r.CandleSignal5Min.Contains("Support");
-                        bool isVolumeConfirmed = r.VolumeSignal == "Volume Burst";
-                        return isPattern && isAtSupport && isVolumeConfirmed;
-                    }
-                case "Confluence Momentum (Bearish)":
-                    {
-                        bool isPattern = r.CandleSignal5Min.Contains("Bearish");
-                        bool isAtResistance = r.CandleSignal5Min.Contains("Resistance");
-                        bool isVolumeConfirmed = r.VolumeSignal == "Volume Burst";
-                        return isPattern && isAtResistance && isVolumeConfirmed;
-                    }
-                case "Option Breakout Setup (Bullish)":
-                    {
-                        bool wasInSqueeze = _stateManager.IsInVolatilitySqueeze.GetValueOrDefault(r.SecurityId);
-                        bool isBreakoutTrigger = r.CandleSignal5Min.Contains("Bullish") && r.VolumeSignal == "Volume Burst";
-                        if (wasInSqueeze && isBreakoutTrigger)
-                        {
-                            _stateManager.IsInVolatilitySqueeze[r.SecurityId] = false;
-                            return true;
-                        }
-                        return false;
-                    }
-                case "Option Breakout Setup (Bearish)":
-                    {
-                        bool wasInSqueeze = _stateManager.IsInVolatilitySqueeze.GetValueOrDefault(r.SecurityId);
-                        bool isBreakoutTrigger = r.CandleSignal5Min.Contains("Bearish") && r.VolumeSignal == "Volume Burst";
-                        if (wasInSqueeze && isBreakoutTrigger)
-                        {
-                            _stateManager.IsInVolatilitySqueeze[r.SecurityId] = false;
-                            return true;
-                        }
-                        return false;
-                    }
-
-                case "Price above VWAP": return r.PriceVsVwapSignal == "Above VWAP";
-                case "Price below VWAP": return r.PriceVsVwapSignal == "Below VWAP";
-                case "5m VWAP EMA confirms bullish trend": return r.VwapEmaSignal5Min == "Bullish Cross";
-                case "5m VWAP EMA confirms bearish trend": return r.VwapEmaSignal5Min == "Bearish Cross";
-                case "OI confirms new longs": return r.OiSignal == "Long Buildup";
-                case "OI confirms new shorts": return r.OiSignal == "Short Buildup";
-                default: return false;
-            }
-        }
-
-        private string GenerateMarketNarrative(AnalysisResult r)
-        {
-            return $"Thesis: {r.MarketThesis}. Dominant Player: {r.DominantPlayer}. Open: {r.OpenTypeSignal}. vs VWAP: {r.PriceVsVwapSignal}.";
-        }
+        private MarketThesis UpdateIntradayThesis(AnalysisResult result) { DominantPlayer player = DetermineDominantPlayer(result); result.DominantPlayer = player; if (result.MarketStructure == "Trending Up") { if (player == DominantPlayer.Buyers) return MarketThesis.Bullish_Trend; if (player == DominantPlayer.Sellers) return MarketThesis.Bullish_Rotation; return MarketThesis.Bullish_Trend; } if (result.MarketStructure == "Trending Down") { if (player == DominantPlayer.Sellers) return MarketThesis.Bearish_Trend; if (player == DominantPlayer.Buyers) return MarketThesis.Bearish_Rotation; return MarketThesis.Bearish_Trend; } return MarketThesis.Balancing; }
+        private DominantPlayer DetermineDominantPlayer(AnalysisResult result) { int buyerEvidence = 0; int sellerEvidence = 0; if (result.PriceVsVwapSignal == "Above VWAP") buyerEvidence++; if (result.PriceVsVwapSignal == "Below VWAP") sellerEvidence++; if (result.EmaSignal5Min == "Bullish Cross") buyerEvidence++; if (result.EmaSignal5Min == "Bearish Cross") sellerEvidence++; if (result.OiSignal == "Long Buildup") buyerEvidence++; if (result.OiSignal == "Short Buildup") sellerEvidence++; if (buyerEvidence > sellerEvidence) return DominantPlayer.Buyers; if (sellerEvidence > buyerEvidence) return DominantPlayer.Sellers; return DominantPlayer.Balance; }
+        private string GenerateMarketNarrative(AnalysisResult r) { return $"Thesis: {r.MarketThesis}. Dominant Player: {r.DominantPlayer}. Open: {r.OpenTypeSignal}. vs VWAP: {r.PriceVsVwapSignal}."; }
     }
 }

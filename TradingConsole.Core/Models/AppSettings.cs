@@ -38,16 +38,18 @@ namespace TradingConsole.Core.Models
 
     public class StrategySettings
     {
-        public ObservableCollection<SignalDriver> TrendContinuation_Bullish { get; set; }
-        public ObservableCollection<SignalDriver> TrendContinuation_Bearish { get; set; }
-        public ObservableCollection<SignalDriver> MeanReversion_Bullish { get; set; }
-        public ObservableCollection<SignalDriver> MeanReversion_Bearish { get; set; }
-        public ObservableCollection<SignalDriver> Reversal_Bullish { get; set; }
-        public ObservableCollection<SignalDriver> Reversal_Bearish { get; set; }
+        // --- MODIFIED: Renamed properties to match the XAML bindings ---
+        public ObservableCollection<SignalDriver> TrendingBullDrivers { get; set; }
+        public ObservableCollection<SignalDriver> TrendingBearDrivers { get; set; }
+        public ObservableCollection<SignalDriver> RangeBoundBullishDrivers { get; set; }
+        public ObservableCollection<SignalDriver> RangeBoundBearishDrivers { get; set; }
+        public ObservableCollection<SignalDriver> VolatileBullishDrivers { get; set; }
+        public ObservableCollection<SignalDriver> VolatileBearishDrivers { get; set; }
 
         public StrategySettings()
         {
-            TrendContinuation_Bullish = new ObservableCollection<SignalDriver>
+            // --- MODIFIED: Populating the renamed properties ---
+            TrendingBullDrivers = new ObservableCollection<SignalDriver>
             {
                 new SignalDriver("Confluence Momentum (Bullish)", 10),
                 new SignalDriver("Option Breakout Setup (Bullish)", 8),
@@ -61,7 +63,7 @@ namespace TradingConsole.Core.Models
                 new SignalDriver("Initiative Buying Above Y-VAH", 2),
             };
 
-            TrendContinuation_Bearish = new ObservableCollection<SignalDriver>
+            TrendingBearDrivers = new ObservableCollection<SignalDriver>
             {
                 new SignalDriver("Confluence Momentum (Bearish)", 10),
                 new SignalDriver("Option Breakout Setup (Bearish)", 8),
@@ -75,7 +77,7 @@ namespace TradingConsole.Core.Models
                 new SignalDriver("Initiative Selling Below Y-VAL", 2),
             };
 
-            MeanReversion_Bullish = new ObservableCollection<SignalDriver>
+            RangeBoundBullishDrivers = new ObservableCollection<SignalDriver>
             {
                  new SignalDriver("Bullish Pattern at Key Support", 4),
                  new SignalDriver("Bullish Skew Divergence (Full)", 3),
@@ -84,7 +86,7 @@ namespace TradingConsole.Core.Models
                  new SignalDriver("Low volume suggests exhaustion (Bullish)", 1),
             };
 
-            MeanReversion_Bearish = new ObservableCollection<SignalDriver>
+            RangeBoundBearishDrivers = new ObservableCollection<SignalDriver>
             {
                 new SignalDriver("Bearish Pattern at Key Resistance", 4),
                 new SignalDriver("Bearish Skew Divergence (Full)", 3),
@@ -94,14 +96,14 @@ namespace TradingConsole.Core.Models
                 new SignalDriver("Low volume suggests exhaustion (Bearish)", 1),
             };
 
-            Reversal_Bullish = new ObservableCollection<SignalDriver>
+            VolatileBullishDrivers = new ObservableCollection<SignalDriver>
             {
                 new SignalDriver("Look Below and Fail at Y-VAL", 5),
                 new SignalDriver("Bullish Skew Divergence (Full)", 4),
                 new SignalDriver("Bullish Pattern at Key Support", 3),
             };
 
-            Reversal_Bearish = new ObservableCollection<SignalDriver>
+            VolatileBearishDrivers = new ObservableCollection<SignalDriver>
             {
                 new SignalDriver("Look Above and Fail at Y-VAH", 5),
                 new SignalDriver("Bearish Skew Divergence (Full)", 4),
