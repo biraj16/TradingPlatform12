@@ -4,6 +4,7 @@ using System.Text;
 using System.Threading.Tasks;
 using System.Web;
 using TradingConsole.Wpf.ViewModels;
+using System.Linq;
 
 namespace TradingConsole.Wpf.Services
 {
@@ -35,40 +36,48 @@ namespace TradingConsole.Wpf.Services
                 return;
             }
 
-            // Construct the message using Markdown for formatting
+            // --- REVISED: Updated message format for new signal engine ---
             var messageBuilder = new StringBuilder();
             string title;
+            string icon;
 
-            // --- NEW LOGIC for Entry/Exit/Reversal Titles ---
+            // Determine the title and icon based on the signal change
             if (result.PrimarySignal == "Bullish" && oldPrimarySignal != "Bullish")
             {
-                title = $"*ENTRY SIGNAL: Go Long*";
+                title = "*ENTRY SIGNAL: GO LONG*";
+                icon = "✅"; // Green check for entry
             }
             else if (result.PrimarySignal == "Bearish" && oldPrimarySignal != "Bearish")
             {
-                title = $"*ENTRY SIGNAL: Go Short*";
+                title = "*ENTRY SIGNAL: GO SHORT*";
+                icon = "🔻"; // Red triangle for entry
             }
             else if (result.PrimarySignal == "Neutral" && oldPrimarySignal == "Bullish")
             {
-                title = $"*EXIT SIGNAL: Close Long Position*";
+                title = "*EXIT SIGNAL: CLOSE LONG*";
+                icon = "Exit";
             }
             else if (result.PrimarySignal == "Neutral" && oldPrimarySignal == "Bearish")
             {
-                title = $"*EXIT SIGNAL: Close Short Position*";
+                title = "*EXIT SIGNAL: CLOSE SHORT*";
+                icon = "Exit";
             }
             else
             {
                 // This case handles a direct flip (e.g., Bullish to Bearish)
-                // which implies exiting the old position and entering a new one.
                 title = $"*REVERSAL SIGNAL: {result.FinalTradeSignal}*";
+                icon = "🔄"; // Reversal icon
             }
 
-            messageBuilder.AppendLine(title);
-            messageBuilder.AppendLine($"Instrument: `{result.Symbol}`");
-            messageBuilder.AppendLine($"LTP: `{result.LTP:N2}`");
+            messageBuilder.AppendLine($"{icon} {title}");
+            messageBuilder.AppendLine($"Instrument: `{result.Symbol}` at `{result.LTP:N2}`");
+            messageBuilder.AppendLine($"Playbook: `{result.FinalTradeSignal}`");
             messageBuilder.AppendLine($"Conviction: `{result.ConvictionScore}`");
             messageBuilder.AppendLine();
-            messageBuilder.AppendLine("*Market Narrative:*");
+            messageBuilder.AppendLine($"*Thesis:* `{result.MarketThesis}`");
+            messageBuilder.AppendLine($"*Dominant Player:* `{result.DominantPlayer}`");
+            messageBuilder.AppendLine();
+            messageBuilder.AppendLine("*Narrative:*");
             messageBuilder.AppendLine($"`{result.MarketNarrative}`");
             messageBuilder.AppendLine();
 
@@ -105,6 +114,8 @@ namespace TradingConsole.Wpf.Services
             var botToken = _settingsViewModel.TelegramBotToken;
             var chatId = _settingsViewModel.TelegramChatId;
 
+            if (string.IsNullOrWhiteSpace(botToken) || string.IsNullOrWhiteSpace(chatId)) return;
+
             // The URL for the sendMessage method of the Telegram Bot API
             var url = $"https://api.telegram.org/bot{botToken}/sendMessage";
 
@@ -124,7 +135,6 @@ namespace TradingConsole.Wpf.Services
                 // Send the POST request
                 var response = await _httpClient.PostAsync(url, content);
 
-                // Optionally, check if the request was successful
                 if (!response.IsSuccessStatusCode)
                 {
                     var errorContent = await response.Content.ReadAsStringAsync();

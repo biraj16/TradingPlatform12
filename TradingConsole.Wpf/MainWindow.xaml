@@ -13,7 +13,6 @@
         Background="#F5F7FA">
 
     <Window.Resources>
-        <!-- Add the new converters here so they can be used in the DataGrid -->
         <converters:ChangeOiToBrushConverter x:Key="ChangeOiToBrushConverter"/>
         <converters:ChangeOiToWidthConverter x:Key="ChangeOiToWidthConverter" MaxWidth="100"/>
     </Window.Resources>
@@ -107,7 +106,6 @@
                                 <DataGridTemplateColumn.CellTemplate>
                                     <DataTemplate>
                                         <Grid>
-                                            <!-- Total OI Bar (Semi-transparent background) -->
                                             <Border HorizontalAlignment="Right" Background="LightSkyBlue" Opacity="0.5">
                                                 <Border.Width>
                                                     <MultiBinding Converter="{StaticResource OiToWidthConverter}">
@@ -116,7 +114,6 @@
                                                     </MultiBinding>
                                                 </Border.Width>
                                             </Border>
-                                            <!-- Change in OI Bar (Colored and on top) -->
                                             <Border HorizontalAlignment="Right" 
                                                     ToolTip="{Binding CallOption.OiChange, StringFormat='Change: {0:N0}'}"
                                                     Background="{Binding CallOption.OiChange, Converter={StaticResource ChangeOiToBrushConverter}}">
@@ -208,7 +205,6 @@
                                 <DataGridTemplateColumn.CellTemplate>
                                     <DataTemplate>
                                         <Grid>
-                                            <!-- Total OI Bar (Semi-transparent background) -->
                                             <Border HorizontalAlignment="Left" Background="LightPink" Opacity="0.5">
                                                 <Border.Width>
                                                     <MultiBinding Converter="{StaticResource OiToWidthConverter}">
@@ -217,7 +213,6 @@
                                                     </MultiBinding>
                                                 </Border.Width>
                                             </Border>
-                                            <!-- Change in OI Bar (Colored and on top) -->
                                             <Border HorizontalAlignment="Left" 
                                                     ToolTip="{Binding PutOption.OiChange, StringFormat='Change: {0:N0}'}"
                                                     Background="{Binding PutOption.OiChange, Converter={StaticResource ChangeOiToBrushConverter}}">
@@ -278,7 +273,8 @@
                                     <DataGrid.Columns>
                                         <DataGridTemplateColumn Width="30">
                                             <DataGridTemplateColumn.Header>
-                                                <CheckBox IsChecked="{Binding DataContext.Portfolio.SelectAllOpenPositions, RelativeSource={RelativeSource AncestorType=Window}, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"/>
+                                                <!-- MODIFIED: Changed binding to be more robust -->
+                                                <CheckBox IsChecked="{Binding DataContext.Portfolio.SelectAllOpenPositions, RelativeSource={RelativeSource AncestorType=DataGrid}, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"/>
                                             </DataGridTemplateColumn.Header>
                                             <DataGridTemplateColumn.CellTemplate>
                                                 <DataTemplate>

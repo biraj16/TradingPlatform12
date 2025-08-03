@@ -92,6 +92,11 @@
                     <DataGridTextColumn Header="Conviction" Binding="{Binding ConvictionScore}" Width="90"/>
                     <DataGridTextColumn Header="Market Thesis" Binding="{Binding MarketThesis}" Width="180" FontWeight="SemiBold"/>
                     <DataGridTextColumn Header="Dominant Player" Binding="{Binding DominantPlayer}" Width="140"/>
+
+                    <!-- NEW: Volatility Columns -->
+                    <DataGridTextColumn Header="Market Regime" Binding="{Binding MarketRegime}" Width="140"/>
+                    <DataGridTextColumn Header="IV Spike" Binding="{Binding IntradayIvSpikeSignal}" Width="120"/>
+
                     <DataGridTextColumn Header="Narrative" Binding="{Binding MarketNarrative}" Width="350"/>
 
                     <!-- Market Structure Columns -->
