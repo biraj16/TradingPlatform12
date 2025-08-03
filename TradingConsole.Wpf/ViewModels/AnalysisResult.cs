@@ -40,7 +40,6 @@ namespace TradingConsole.Wpf.ViewModels
         {
             Symbol = source.Symbol;
             LTP = source.LTP;
-            // --- NEW: Update PriceChange properties ---
             PriceChange = source.PriceChange;
             PriceChangePercent = source.PriceChangePercent;
             Vwap = source.Vwap;
@@ -101,9 +100,9 @@ namespace TradingConsole.Wpf.ViewModels
             BullishDrivers = source.BullishDrivers;
             BearishDrivers = source.BearishDrivers;
             IndexSignal = source.IndexSignal;
-            // --- MAGA REFACTOR: Update new thesis properties ---
             MarketThesis = source.MarketThesis;
             DominantPlayer = source.DominantPlayer;
+            VolatilityStateSignal = source.VolatilityStateSignal;
         }
 
         private bool _isExpanded;
@@ -121,7 +120,6 @@ namespace TradingConsole.Wpf.ViewModels
         private string _securityId = string.Empty;
         private string _symbol = string.Empty;
         private decimal _ltp;
-        // --- NEW: Properties for Price Change display ---
         private decimal _priceChange;
         public decimal PriceChange { get => _priceChange; set => SetProperty(ref _priceChange, value); }
         private decimal _priceChangePercent;
@@ -286,12 +284,14 @@ namespace TradingConsole.Wpf.ViewModels
         private IndexSignal _indexSignal = new IndexSignal();
         public IndexSignal IndexSignal { get => _indexSignal; set => SetProperty(ref _indexSignal, value); }
 
-        // --- MAGA REFACTOR: New properties for the Intraday Thesis ---
         private MarketThesis _marketThesis = MarketThesis.Indeterminate;
         public MarketThesis MarketThesis { get => _marketThesis; set => SetProperty(ref _marketThesis, value); }
 
         private DominantPlayer _dominantPlayer = DominantPlayer.Indeterminate;
         public DominantPlayer DominantPlayer { get => _dominantPlayer; set => SetProperty(ref _dominantPlayer, value); }
+
+        private string _volatilityStateSignal = "N/A";
+        public string VolatilityStateSignal { get => _volatilityStateSignal; set => SetProperty(ref _volatilityStateSignal, value); }
 
 
         public string FullGroupIdentifier

@@ -139,6 +139,43 @@ namespace TradingConsole.Wpf.Services
         {
             switch (driverName)
             {
+                case "Confluence Momentum (Bullish)":
+                    {
+                        bool isPattern = r.CandleSignal5Min.Contains("Bullish");
+                        bool isAtSupport = r.CandleSignal5Min.Contains("Support");
+                        bool isVolumeConfirmed = r.VolumeSignal == "Volume Burst";
+                        return isPattern && isAtSupport && isVolumeConfirmed;
+                    }
+                case "Confluence Momentum (Bearish)":
+                    {
+                        bool isPattern = r.CandleSignal5Min.Contains("Bearish");
+                        bool isAtResistance = r.CandleSignal5Min.Contains("Resistance");
+                        bool isVolumeConfirmed = r.VolumeSignal == "Volume Burst";
+                        return isPattern && isAtResistance && isVolumeConfirmed;
+                    }
+                case "Option Breakout Setup (Bullish)":
+                    {
+                        bool wasInSqueeze = _stateManager.IsInVolatilitySqueeze.GetValueOrDefault(r.SecurityId);
+                        bool isBreakoutTrigger = r.CandleSignal5Min.Contains("Bullish") && r.VolumeSignal == "Volume Burst";
+                        if (wasInSqueeze && isBreakoutTrigger)
+                        {
+                            _stateManager.IsInVolatilitySqueeze[r.SecurityId] = false;
+                            return true;
+                        }
+                        return false;
+                    }
+                case "Option Breakout Setup (Bearish)":
+                    {
+                        bool wasInSqueeze = _stateManager.IsInVolatilitySqueeze.GetValueOrDefault(r.SecurityId);
+                        bool isBreakoutTrigger = r.CandleSignal5Min.Contains("Bearish") && r.VolumeSignal == "Volume Burst";
+                        if (wasInSqueeze && isBreakoutTrigger)
+                        {
+                            _stateManager.IsInVolatilitySqueeze[r.SecurityId] = false;
+                            return true;
+                        }
+                        return false;
+                    }
+
                 case "Price above VWAP": return r.PriceVsVwapSignal == "Above VWAP";
                 case "Price below VWAP": return r.PriceVsVwapSignal == "Below VWAP";
                 case "5m VWAP EMA confirms bullish trend": return r.VwapEmaSignal5Min == "Bullish Cross";

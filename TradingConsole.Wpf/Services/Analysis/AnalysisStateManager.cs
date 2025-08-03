@@ -34,6 +34,9 @@ namespace TradingConsole.Wpf.Services.Analysis
         public Dictionary<string, IvSkewState> IvSkewStates { get; } = new();
         public Dictionary<string, DateTime> LastSignalTime { get; } = new();
 
+        public Dictionary<string, bool> IsInVolatilitySqueeze { get; } = new();
+
+
         private readonly List<TimeSpan> _timeframes = new()
         {
             TimeSpan.FromMinutes(1),
@@ -57,6 +60,7 @@ namespace TradingConsole.Wpf.Services.Analysis
             MultiTimeframeRsiState[securityId] = new Dictionary<TimeSpan, RsiState>();
             MultiTimeframeAtrState[securityId] = new Dictionary<TimeSpan, AtrState>();
             MultiTimeframeObvState[securityId] = new Dictionary<TimeSpan, ObvState>();
+            IsInVolatilitySqueeze[securityId] = false;
 
             if (instrumentType == "INDEX")
             {

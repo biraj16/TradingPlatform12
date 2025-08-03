@@ -77,6 +77,22 @@ namespace TradingConsole.Wpf.Services
             {
                 result.InstitutionalIntent = RunTier1InstitutionalIntentAnalysis(instrument);
             }
+
+            result.VolatilityStateSignal = GenerateVolatilityStateSignal(instrumentForAnalysis, result);
+        }
+
+        private string GenerateVolatilityStateSignal(DashboardInstrument instrument, AnalysisResult result)
+        {
+            bool isAtrContracting = result.AtrSignal5Min == "Vol Contracting";
+            bool isIvRankLow = result.IvRank < 30;
+
+            if (isAtrContracting && isIvRankLow)
+            {
+                _stateManager.IsInVolatilitySqueeze[instrument.SecurityId] = true;
+                return "IV Squeeze Setup";
+            }
+
+            return "Normal Volatility";
         }
 
         public void UpdateIvMetrics(DashboardInstrument instrument, decimal underlyingPrice)
@@ -159,63 +175,40 @@ namespace TradingConsole.Wpf.Services
         private string RecognizeCandlestickPattern(List<Candle> candles, AnalysisResult analysisResult)
         {
             if (candles.Count < 3) return "N/A";
-
             string pattern = IdentifyCandlePattern(candles);
             if (pattern == "N/A") return "N/A";
-
             string context = GetPatternContext(analysisResult);
             string volumeInfo = GetVolumeConfirmation(candles.Last(), candles[^2]);
-
             return $"{pattern}{context}{volumeInfo}";
         }
 
-        // --- UPGRADED METHOD: Now includes more patterns and tolerance ---
         private string IdentifyCandlePattern(List<Candle> candles)
         {
-            var c1 = candles.Last();    // Current, most recent candle
-            var c2 = candles[^2]; // Previous candle
-            var c3 = candles[^3]; // Two candles ago
-
+            var c1 = candles.Last();
+            var c2 = candles[^2];
+            var c3 = candles[^3];
             decimal body1 = Math.Abs(c1.Open - c1.Close);
             decimal range1 = c1.High - c1.Low;
             if (range1 == 0) return "N/A";
-
             decimal upperShadow1 = c1.High - Math.Max(c1.Open, c1.Close);
             decimal lowerShadow1 = Math.Min(c1.Open, c1.Close) - c1.Low;
-
-            // Single Candle Patterns (with tolerance)
             if (body1 / range1 < 0.15m) return "Neutral Doji";
             if (lowerShadow1 > body1 * 1.8m && upperShadow1 < body1 * 0.9m) return c1.Close > c1.Open ? "Bullish Hammer" : "Bearish Hanging Man";
             if (upperShadow1 > body1 * 1.8m && lowerShadow1 < body1 * 0.9m) return c1.Close > c1.Open ? "Bullish Inv Hammer" : "Bearish Shooting Star";
             if (body1 / range1 > 0.85m) return c1.Close > c1.Open ? "Bullish Marubozu" : "Bearish Marubozu";
-
-            // Double Candle Patterns (with tolerance)
             if (c1.Close > c2.Open && c1.Open < c2.Close && c1.Close > c1.Open && c2.Close < c2.Open) return "Bullish Engulfing";
             if (c1.Open > c2.Close && c1.Close < c2.Open && c1.Close < c1.Open && c2.Close > c2.Open) return "Bearish Engulfing";
-
-            // --- NEW PATTERNS ---
             decimal c2BodyMidpoint = c2.Open + (c2.Close - c2.Open) / 2;
             if (c2.Close < c2.Open && c1.Open < c2.Low && c1.Close > c2BodyMidpoint && c1.Close < c2.Open) return "Bullish Piercing Line";
             if (c2.Close > c2.Open && c1.Open > c2.High && c1.Close < c2BodyMidpoint && c1.Close > c2.Open) return "Bearish Dark Cloud Cover";
-
-            // Triple Candle Patterns
             bool isMorningStar = c3.Close < c3.Open && Math.Max(c2.Open, c2.Close) < c3.Close && c1.Close > c1.Open && c1.Close > (c3.Open + c3.Close) / 2;
             if (isMorningStar) return "Bullish Morning Star";
-
             bool isEveningStar = c3.Close > c3.Open && Math.Min(c2.Open, c2.Close) > c3.Close && c1.Close < c1.Open && c1.Close < (c3.Open + c3.Close) / 2;
             if (isEveningStar) return "Bearish Evening Star";
-
-            // --- NEW PATTERNS ---
-            bool isThreeWhiteSoldiers = c3.Close > c3.Open && c2.Close > c2.Open && c1.Close > c1.Open &&
-                                        c2.Open > c3.Open && c2.Close > c3.Close &&
-                                        c1.Open > c2.Open && c1.Close > c2.Close;
+            bool isThreeWhiteSoldiers = c3.Close > c3.Open && c2.Close > c2.Open && c1.Close > c1.Open && c2.Open > c3.Open && c2.Close > c3.Close && c1.Open > c2.Open && c1.Close > c2.Close;
             if (isThreeWhiteSoldiers) return "Three White Soldiers";
-
-            bool isThreeBlackCrows = c3.Close < c3.Open && c2.Close < c2.Open && c1.Close < c1.Open &&
-                                     c2.Open < c3.Open && c2.Close < c3.Close &&
-                                     c1.Open < c2.Open && c1.Close < c2.Close;
+            bool isThreeBlackCrows = c3.Close < c3.Open && c2.Close < c2.Open && c1.Close < c1.Open && c2.Open < c3.Open && c2.Close < c3.Close && c1.Open < c2.Open && c1.Close < c2.Close;
             if (isThreeBlackCrows) return "Three Black Crows";
-
             return "N/A";
         }
 

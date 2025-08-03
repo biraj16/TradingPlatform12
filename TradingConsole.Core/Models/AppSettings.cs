@@ -1,4 +1,5 @@
-﻿using System;
+﻿// In TradingConsole.Core/Models/AppSettings.cs
+using System;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.Runtime.CompilerServices;
@@ -37,7 +38,6 @@ namespace TradingConsole.Core.Models
 
     public class StrategySettings
     {
-        // --- MAGA REFACTOR: Renamed and restructured for thesis-driven logic ---
         public ObservableCollection<SignalDriver> TrendContinuation_Bullish { get; set; }
         public ObservableCollection<SignalDriver> TrendContinuation_Bearish { get; set; }
         public ObservableCollection<SignalDriver> MeanReversion_Bullish { get; set; }
@@ -49,6 +49,8 @@ namespace TradingConsole.Core.Models
         {
             TrendContinuation_Bullish = new ObservableCollection<SignalDriver>
             {
+                new SignalDriver("Confluence Momentum (Bullish)", 10),
+                new SignalDriver("Option Breakout Setup (Bullish)", 8),
                 new SignalDriver("True Acceptance Above Y-VAH", 5),
                 new SignalDriver("Institutional Intent is Bullish", 4),
                 new SignalDriver("5m VWAP EMA confirms bullish trend", 3),
@@ -61,6 +63,8 @@ namespace TradingConsole.Core.Models
 
             TrendContinuation_Bearish = new ObservableCollection<SignalDriver>
             {
+                new SignalDriver("Confluence Momentum (Bearish)", 10),
+                new SignalDriver("Option Breakout Setup (Bearish)", 8),
                 new SignalDriver("True Acceptance Below Y-VAL", 5),
                 new SignalDriver("Institutional Intent is Bearish", 4),
                 new SignalDriver("5m VWAP EMA confirms bearish trend", 3),
@@ -106,18 +110,15 @@ namespace TradingConsole.Core.Models
         }
     }
 
-    /// <summary>
-    /// Holds all settings related to trade automation.
-    /// </summary>
     public class AutomationSettings : ObservableModel
     {
         private bool _isAutomationEnabled;
         public bool IsAutomationEnabled { get => _isAutomationEnabled; set => SetProperty(ref _isAutomationEnabled, value); }
 
-        private string _selectedAutoTradeIndex = "Nifty 50"; // Default to Nifty 50
+        private string _selectedAutoTradeIndex = "Nifty 50";
         public string SelectedAutoTradeIndex { get => _selectedAutoTradeIndex; set => SetProperty(ref _selectedAutoTradeIndex, value); }
 
-        [JsonIgnore] // This doesn't need to be saved in the settings file
+        [JsonIgnore]
         public List<string> AutoTradeableIndices { get; } = new List<string> { "Nifty 50", "Nifty Bank", "Sensex" };
 
         private int _lotsPerTrade = 1;
@@ -180,7 +181,6 @@ namespace TradingConsole.Core.Models
 
         public StrategySettings Strategy { get; set; }
 
-        // --- ADDED: New property for Automation Settings ---
         public AutomationSettings AutomationSettings { get; set; }
 
         public bool IsTelegramNotificationEnabled { get; set; }
@@ -198,7 +198,6 @@ namespace TradingConsole.Core.Models
                 { "SENSEX", 1000 }
             };
 
-            // --- MODIFIED: Cleaned up the default list to focus only on Nifty ---
             MonitoredSymbols = new List<string>
             {
                 "IDX:Nifty 50",
@@ -251,8 +250,6 @@ namespace TradingConsole.Core.Models
             };
 
             Strategy = new StrategySettings();
-
-            // --- ADDED: Initialize Automation Settings with defaults ---
             AutomationSettings = new AutomationSettings();
 
             IsTelegramNotificationEnabled = false;
