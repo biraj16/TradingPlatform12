@@ -1,5 +1,5 @@
 ﻿// TradingConsole.Wpf/Services/AnalysisService.cs
-// --- MODIFIED: Added Market Phase and Data Staleness checks ---
+// --- MODIFIED: Added LTP assignment to the result object ---
 using System;
 using System.Collections.Generic;
 using System.ComponentModel;
@@ -15,14 +15,12 @@ using TradingConsole.Wpf.ViewModels;
 
 namespace TradingConsole.Wpf.Services
 {
-    // Enums MarketThesis and DominantPlayer remain unchanged...
     public enum MarketThesis { Bullish_Trend, Bullish_Rotation, Bullish_Reversal_Attempt, Bearish_Trend, Bearish_Rotation, Bearish_Reversal_Attempt, Balancing, Indeterminate, Choppy }
     public enum DominantPlayer { Buyers, Sellers, Balance, Indeterminate }
 
     public class AnalysisService : INotifyPropertyChanged
     {
         #region Services and Parameters
-        // ... (fields remain the same)
         private readonly SettingsViewModel _settingsViewModel;
         private readonly DhanApiClient _apiClient;
         private readonly ScripMasterService _scripMasterService;
@@ -51,9 +49,6 @@ namespace TradingConsole.Wpf.Services
             _thesisSynthesizer = new ThesisSynthesizer(settingsViewModel, signalLoggerService, notificationService, _stateManager);
         }
 
-        /// <summary>
-        /// NEW: Determines the current market phase based on the time of day.
-        /// </summary>
         private void UpdateMarketPhase()
         {
             var istZone = TimeZoneInfo.FindSystemTimeZoneById("India Standard Time");
@@ -70,16 +65,13 @@ namespace TradingConsole.Wpf.Services
         {
             if (!IsMarketOpen()) return;
 
-            // --- NEW: Data Staleness Check ---
             var lastTradeDateTime = DateTimeOffset.FromUnixTimeSeconds(instrument.LastTradeTime).UtcDateTime;
             if ((DateTime.UtcNow - lastTradeDateTime).TotalSeconds > 15)
             {
-                // Optionally, update status message to warn user of stale data
                 Debug.WriteLine($"[AnalysisService] Stale data received for {instrument.DisplayName}. Skipping analysis.");
                 return;
             }
 
-            // --- NEW: Update Market Phase ---
             UpdateMarketPhase();
 
             if (string.IsNullOrEmpty(instrument.SecurityId)) return;
@@ -99,11 +91,56 @@ namespace TradingConsole.Wpf.Services
             }
         }
 
+        private void AggregateIntoCandle(DashboardInstrument instrument, TimeSpan timeframe)
+        {
+            var candles = _stateManager.GetCandles(instrument.SecurityId, timeframe);
+            if (candles == null) return;
+            var now = DateTime.UtcNow;
+            var candleTimestamp = new DateTime(now.Ticks - (now.Ticks % timeframe.Ticks), now.Kind);
+            var currentCandle = candles.LastOrDefault();
+
+            if (currentCandle == null || currentCandle.Timestamp != candleTimestamp)
+            {
+                var newCandle = new Candle { Timestamp = candleTimestamp, Open = instrument.LTP, High = instrument.LTP, Low = instrument.LTP, Close = instrument.LTP, Volume = instrument.LastTradedQuantity, OpenInterest = (long)instrument.OpenInterest, Vwap = instrument.AvgTradePrice };
+                candles.Add(newCandle);
+
+                if (currentCandle != null)
+                {
+                    if (timeframe.TotalMinutes == 1) UpdateMarketProfileForCandle(instrument, currentCandle);
+                    RunComplexAnalysis(instrument);
+                }
+                CandleUpdated?.Invoke(instrument.SecurityId, newCandle, timeframe);
+            }
+            else
+            {
+                currentCandle.High = Math.Max(currentCandle.High, instrument.LTP);
+                currentCandle.Low = Math.Min(currentCandle.Low, instrument.LTP);
+                currentCandle.Close = instrument.LTP;
+                currentCandle.Volume += instrument.LastTradedQuantity;
+                currentCandle.OpenInterest = (long)instrument.OpenInterest;
+                CandleUpdated?.Invoke(instrument.SecurityId, currentCandle, timeframe);
+            }
+        }
+
+        private void RunComplexAnalysis(DashboardInstrument instrument)
+        {
+            var result = _stateManager.GetResult(instrument.SecurityId);
+
+            // --- FIX: Explicitly set the LTP and change properties on the result object ---
+            result.LTP = instrument.LTP;
+            result.PriceChange = instrument.LTP - instrument.Close;
+            result.PriceChangePercent = (instrument.Close > 0) ? (result.PriceChange / instrument.Close) : 0;
+
+            DashboardInstrument instrumentForAnalysis = GetInstrumentForVolumeAnalysis(instrument);
+            _signalGenerationService.GenerateAllSignals(instrument, instrumentForAnalysis, result);
+            _thesisSynthesizer.SynthesizeTradeSignal(result);
+            LinkFuturesDataToIndex();
+            OnAnalysisUpdated?.Invoke(result);
+        }
+
         #region Boilerplate and other methods
         private bool IsMarketOpen() { try { var istZone = TimeZoneInfo.FindSystemTimeZoneById("India Standard Time"); var istNow = TimeZoneInfo.ConvertTimeFromUtc(DateTime.UtcNow, istZone); if (istNow.DayOfWeek == DayOfWeek.Saturday || istNow.DayOfWeek == DayOfWeek.Sunday) return false; if (_settingsViewModel.MarketHolidays.Contains(istNow.Date)) return false; var marketOpen = new TimeSpan(9, 15, 0); var marketClose = new TimeSpan(15, 30, 0); if (istNow.TimeOfDay < marketOpen || istNow.TimeOfDay > marketClose) return false; return true; } catch (TimeZoneNotFoundException) { Debug.WriteLine("WARNING: India Standard Time zone not found."); var now = DateTime.UtcNow; if (now.DayOfWeek == DayOfWeek.Saturday || now.DayOfWeek == DayOfWeek.Sunday) return false; return true; } }
         private void InitializeNewInstrument(DashboardInstrument instrument) { _stateManager.InitializeStateForInstrument(instrument.SecurityId, instrument.DisplayName, instrument.InstrumentType); _stateManager.HistoricalMarketProfiles[instrument.SecurityId] = _marketProfileService.GetHistoricalProfiles(instrument.SecurityId); if (!_stateManager.MarketProfiles.ContainsKey(instrument.SecurityId)) { decimal tickSize = _signalGenerationService.GetTickSize(instrument); var startTime = DateTime.Today.Add(new TimeSpan(9, 15, 0)); _stateManager.MarketProfiles[instrument.SecurityId] = new MarketProfile(tickSize, startTime); } LoadIndicatorStateFromStorage(instrument.SecurityId); Task.Run(() => BackfillAndSavePreviousDayProfileAsync(instrument)); Task.Run(() => BackfillCurrentDayCandlesAsync(instrument)); RunDailyBiasAnalysis(instrument); }
-        private void AggregateIntoCandle(DashboardInstrument instrument, TimeSpan timeframe) { var candles = _stateManager.GetCandles(instrument.SecurityId, timeframe); if (candles == null) return; var now = DateTime.UtcNow; var candleTimestamp = new DateTime(now.Ticks - (now.Ticks % timeframe.Ticks), now.Kind); var currentCandle = candles.LastOrDefault(); if (currentCandle == null || currentCandle.Timestamp != candleTimestamp) { var newCandle = new Candle { Timestamp = candleTimestamp, Open = instrument.LTP, High = instrument.LTP, Low = instrument.LTP, Close = instrument.LTP, Volume = instrument.LastTradedQuantity, OpenInterest = (long)instrument.OpenInterest, Vwap = instrument.AvgTradePrice }; candles.Add(newCandle); if (currentCandle != null) { if (timeframe.TotalMinutes == 1) UpdateMarketProfileForCandle(instrument, currentCandle); RunComplexAnalysis(instrument); } CandleUpdated?.Invoke(instrument.SecurityId, newCandle, timeframe); } else { currentCandle.High = Math.Max(currentCandle.High, instrument.LTP); currentCandle.Low = Math.Min(currentCandle.Low, instrument.LTP); currentCandle.Close = instrument.LTP; currentCandle.Volume += instrument.LastTradedQuantity; currentCandle.OpenInterest = (long)instrument.OpenInterest; CandleUpdated?.Invoke(instrument.SecurityId, currentCandle, timeframe); } }
-        private void RunComplexAnalysis(DashboardInstrument instrument) { var result = _stateManager.GetResult(instrument.SecurityId); result.PriceChange = instrument.LTP - instrument.Close; result.PriceChangePercent = (instrument.Close > 0) ? (result.PriceChange / instrument.Close) : 0; DashboardInstrument instrumentForAnalysis = GetInstrumentForVolumeAnalysis(instrument); _signalGenerationService.GenerateAllSignals(instrument, instrumentForAnalysis, result); _thesisSynthesizer.SynthesizeTradeSignal(result); LinkFuturesDataToIndex(); OnAnalysisUpdated?.Invoke(result); }
         public List<Candle>? GetCandles(string securityId, TimeSpan timeframe) => _stateManager.GetCandles(securityId, timeframe);
         public void SetNearestExpiryDates(Dictionary<string, string> expiryDates) { foreach (var kvp in expiryDates) { if (DateTime.TryParse(kvp.Value, out var date)) { _nearestExpiryDates[kvp.Key] = date.Date; } } }
         public void SaveIndicatorStates() { if (!IsMarketOpen()) return; var timeframes = new[] { TimeSpan.FromMinutes(1), TimeSpan.FromMinutes(5), TimeSpan.FromMinutes(15) }; foreach (var securityId in _stateManager.MultiTimeframePriceEmaState.Keys) { foreach (var timeframe in timeframes) { var key = $"{securityId}_{timeframe.TotalMinutes}"; var rsiState = _stateManager.MultiTimeframeRsiState[securityId][timeframe]; var atrState = _stateManager.MultiTimeframeAtrState[securityId][timeframe]; var obvState = _stateManager.MultiTimeframeObvState[securityId][timeframe]; var stateToSave = new IndicatorState { LastRsiAvgGain = rsiState.AvgGain, LastRsiAvgLoss = rsiState.AvgLoss, LastAtr = atrState.CurrentAtr, LastObv = obvState.CurrentObv, LastObvMovingAverage = obvState.CurrentMovingAverage }; _indicatorStateService.UpdateState(key, stateToSave); } } _indicatorStateService.SaveDatabase(); }

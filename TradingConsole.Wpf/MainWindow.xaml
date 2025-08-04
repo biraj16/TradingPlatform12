@@ -89,12 +89,14 @@
                             <ComboBox ItemsSource="{Binding Indices}" SelectedItem="{Binding SelectedIndex}" MinWidth="120" Margin="5,0"/>
                             <TextBlock Text="Expiry Date: " VerticalAlignment="Center" FontWeight="SemiBold" Margin="15,0,0,0"/>
                             <ComboBox ItemsSource="{Binding ExpiryDates}" SelectedItem="{Binding SelectedExpiry}" MinWidth="150" Margin="5,0"/>
-                            <StackPanel Orientation="Horizontal" Margin="20,0,0,0" VerticalAlignment="Center">
-                                <TextBlock Text="{Binding SelectedIndex.Name}" VerticalAlignment="Center" FontWeight="Bold" FontSize="14"/>
-                                <TextBlock Text="{Binding UnderlyingPrice, StringFormat=N2}" FontWeight="Bold" FontSize="14" VerticalAlignment="Center" Margin="10,0,0,0"/>
-                                <TextBlock Foreground="{Binding UnderlyingPriceChange, Mode=OneWay, Converter={StaticResource ValueToBrushConverter}}" Margin="10,0,0,0" VerticalAlignment="Center">
-                                    <Run Text="{Binding UnderlyingPriceChange, Mode=OneWay, StringFormat=N2}"/>
-                                    <Run Text="{Binding UnderlyingPriceChangePercent, Mode=OneWay, StringFormat=' ({0:P2})'}" Foreground="Gray"/>
+                            <!-- MODIFIED: This section now binds to the DashboardInstrument for the selected index -->
+                            <StackPanel Orientation="Horizontal" Margin="20,0,0,0" VerticalAlignment="Center"
+                                        DataContext="{Binding SelectedDashboardInstrument}">
+                                <TextBlock Text="{Binding DisplayName}" VerticalAlignment="Center" FontWeight="Bold" FontSize="14"/>
+                                <TextBlock Text="{Binding LTP, StringFormat=N2}" FontWeight="Bold" FontSize="14" VerticalAlignment="Center" Margin="10,0,0,0"/>
+                                <TextBlock Foreground="{Binding Change, Mode=OneWay, Converter={StaticResource ValueToBrushConverter}}" Margin="10,0,0,0" VerticalAlignment="Center">
+                                    <Run Text="{Binding Change, Mode=OneWay, StringFormat=N2}"/>
+                                    <Run Text="{Binding ChangePercent, Mode=OneWay, StringFormat=' ({0:P2})'}" Foreground="Gray"/>
                                 </TextBlock>
                             </StackPanel>
                         </StackPanel>
@@ -205,7 +207,6 @@
                                 <DataGridTemplateColumn.CellTemplate>
                                     <DataTemplate>
                                         <Grid>
-                                            <!-- FIXED: Changed HorizontalAlignment to Left for Puts -->
                                             <Border HorizontalAlignment="Left" Background="LightPink" Opacity="0.5">
                                                 <Border.Width>
                                                     <MultiBinding Converter="{StaticResource OiToWidthConverter}">
@@ -214,7 +215,6 @@
                                                     </MultiBinding>
                                                 </Border.Width>
                                             </Border>
-                                            <!-- FIXED: Changed HorizontalAlignment to Left for Puts -->
                                             <Border HorizontalAlignment="Left" 
                                                     ToolTip="{Binding PutOption.OiChange, StringFormat='Change: {0:N0}'}"
                                                     Background="{Binding PutOption.OiChange, Converter={StaticResource ChangeOiToBrushConverter}}">
