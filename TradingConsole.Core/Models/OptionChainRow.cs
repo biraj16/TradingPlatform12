@@ -38,6 +38,10 @@ namespace TradingConsole.Core.Models
         private decimal _oiChangePercent;
         private long _volume;
         private decimal _delta;
+        // --- ADDED: Backing fields for new greeks ---
+        private decimal _gamma;
+        private decimal _theta;
+        private decimal _vega;
 
         public string SecurityId { get => _securityId; set { _securityId = value; OnPropertyChanged(nameof(SecurityId)); } }
         public decimal LTP { get => _ltp; set { if (_ltp != value) { _ltp = value; OnPropertyChanged(nameof(LTP)); OnPropertyChanged(nameof(LtpChange)); OnPropertyChanged(nameof(LtpChangePercent)); } } }
@@ -50,6 +54,12 @@ namespace TradingConsole.Core.Models
         public decimal OiChangePercent { get => _oiChangePercent; set { _oiChangePercent = value; OnPropertyChanged(nameof(OiChangePercent)); } }
         public long Volume { get => _volume; set { _volume = value; OnPropertyChanged(nameof(Volume)); } }
         public decimal Delta { get => _delta; set { _delta = value; OnPropertyChanged(nameof(Delta)); } }
+
+        // --- ADDED: Public properties for Gamma, Theta, and Vega with change notification ---
+        public decimal Gamma { get => _gamma; set { _gamma = value; OnPropertyChanged(nameof(Gamma)); } }
+        public decimal Theta { get => _theta; set { _theta = value; OnPropertyChanged(nameof(Theta)); } }
+        public decimal Vega { get => _vega; set { _vega = value; OnPropertyChanged(nameof(Vega)); } }
+
 
         public event PropertyChangedEventHandler? PropertyChanged;
         protected void OnPropertyChanged([CallerMemberName] string? propertyName = null)

@@ -1,6 +1,7 @@
 ﻿// TradingConsole.Wpf/ViewModels/AnalysisResult.cs
 using System.Collections.Generic;
 using System.Linq;
+using System.Reflection;
 using TradingConsole.Core.Models;
 using TradingConsole.Wpf.Services;
 
@@ -8,74 +9,28 @@ namespace TradingConsole.Wpf.ViewModels
 {
     public class AnalysisResult : ObservableModel
     {
+        /// <summary>
+        /// --- REFACTORED: This method now uses reflection to update properties. ---
+        /// This is more robust and maintainable than manually assigning each property.
+        /// It automatically handles any new properties added to the class.
+        /// </summary>
+        /// <param name="source">The source object with the latest analysis data.</param>
         public void Update(AnalysisResult source)
         {
-            Symbol = source.Symbol;
-            LTP = source.LTP;
-            PriceChange = source.PriceChange;
-            PriceChangePercent = source.PriceChangePercent;
-            Vwap = source.Vwap;
-            CurrentVolume = source.CurrentVolume;
-            AvgVolume = source.AvgVolume;
-            VolumeSignal = source.VolumeSignal;
-            OiSignal = source.OiSignal;
-            InstrumentGroup = source.InstrumentGroup;
-            UnderlyingGroup = source.UnderlyingGroup;
-            EmaSignal1Min = source.EmaSignal1Min;
-            EmaSignal5Min = source.EmaSignal5Min;
-            EmaSignal15Min = source.EmaSignal15Min;
-            VwapEmaSignal1Min = source.VwapEmaSignal1Min;
-            VwapEmaSignal5Min = source.VwapEmaSignal5Min;
-            VwapEmaSignal15Min = source.VwapEmaSignal15Min;
-            PriceVsVwapSignal = source.PriceVsVwapSignal;
-            PriceVsCloseSignal = source.PriceVsCloseSignal;
-            DayRangeSignal = source.DayRangeSignal;
-            CustomLevelSignal = source.CustomLevelSignal;
-            CandleSignal1Min = source.CandleSignal1Min;
-            CandleSignal5Min = source.CandleSignal5Min;
-            CurrentIv = source.CurrentIv;
-            AvgIv = source.AvgIv;
-            IvSignal = source.IvSignal;
-            IvRank = source.IvRank;
-            IvPercentile = source.IvPercentile;
-            IvTrendSignal = source.IvTrendSignal;
-            IvSkewSignal = source.IvSkewSignal;
-            RsiValue1Min = source.RsiValue1Min;
-            RsiSignal1Min = source.RsiSignal1Min;
-            RsiValue5Min = source.RsiValue5Min;
-            RsiSignal5Min = source.RsiSignal5Min;
-            ObvDivergenceSignal1Min = source.ObvDivergenceSignal1Min;
-            ObvDivergenceSignal5Min = source.ObvDivergenceSignal5Min;
-            Atr1Min = source.Atr1Min;
-            AtrSignal1Min = source.AtrSignal1Min;
-            Atr5Min = source.Atr5Min;
-            AtrSignal5Min = source.AtrSignal5Min;
-            DevelopingPoc = source.DevelopingPoc;
-            DevelopingVah = source.DevelopingVah;
-            DevelopingVal = source.DevelopingVal;
-            DevelopingVpoc = source.DevelopingVpoc;
-            MarketProfileSignal = source.MarketProfileSignal;
-            InitialBalanceHigh = source.InitialBalanceHigh;
-            InitialBalanceLow = source.InitialBalanceLow;
-            InitialBalanceSignal = source.InitialBalanceSignal;
-            InstitutionalIntent = source.InstitutionalIntent;
-            OpenTypeSignal = source.OpenTypeSignal;
-            YesterdayProfileSignal = source.YesterdayProfileSignal;
-            VwapBandSignal = source.VwapBandSignal;
-            VwapUpperBand = source.VwapUpperBand;
-            VwapLowerBand = source.VwapLowerBand;
-            AnchoredVwap = source.AnchoredVwap;
-            MarketNarrative = source.MarketNarrative;
-            FinalTradeSignal = source.FinalTradeSignal;
-            PrimarySignal = source.PrimarySignal;
-            ConvictionScore = source.ConvictionScore;
-            BullishDrivers = source.BullishDrivers;
-            BearishDrivers = source.BearishDrivers;
-            MarketThesis = source.MarketThesis;
-            DominantPlayer = source.DominantPlayer;
-            VolatilityStateSignal = source.VolatilityStateSignal;
-            MarketRegime = source.MarketRegime; // NEW
-            IntradayIvSpikeSignal = source.IntradayIvSpikeSignal; // NEW
+            // Get all public instance properties of the AnalysisResult class.
+            PropertyInfo[] properties = typeof(AnalysisResult).GetProperties(BindingFlags.Public | BindingFlags.Instance);
+
+            foreach (var property in properties)
+            {
+                // Ensure the property can be written to and is not an indexed property.
+                if (property.CanWrite && property.GetIndexParameters().Length == 0)
+                {
+                    // Get the value from the source object.
+                    var value = property.GetValue(source);
+                    // Set the value on the current (destination) object.
+                    property.SetValue(this, value);
+                }
+            }
         }
 
         private bool _isExpanded;
@@ -269,6 +224,10 @@ namespace TradingConsole.Wpf.ViewModels
 
         private string _intradayIvSpikeSignal = "N/A";
         public string IntradayIvSpikeSignal { get => _intradayIvSpikeSignal; set => SetProperty(ref _intradayIvSpikeSignal, value); }
+
+        // --- ADDED: Property to hold the Gamma signal ---
+        private string _gammaSignal = "N/A";
+        public string GammaSignal { get => _gammaSignal; set => SetProperty(ref _gammaSignal, value); }
 
 
         public string FullGroupIdentifier

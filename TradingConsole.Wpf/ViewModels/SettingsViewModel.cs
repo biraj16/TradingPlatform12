@@ -1,4 +1,5 @@
-﻿using System;
+﻿// In TradingConsole.Wpf/ViewModels/SettingsViewModel.cs
+using System;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.ComponentModel;
@@ -65,6 +66,10 @@ namespace TradingConsole.Wpf.ViewModels
         public decimal VwapUpperBandMultiplier { get => _vwapUpperBandMultiplier; set { if (_vwapUpperBandMultiplier != value) { _vwapUpperBandMultiplier = value; OnPropertyChanged(); } } }
         private decimal _vwapLowerBandMultiplier;
         public decimal VwapLowerBandMultiplier { get => _vwapLowerBandMultiplier; set { if (_vwapLowerBandMultiplier != value) { _vwapLowerBandMultiplier = value; OnPropertyChanged(); } } }
+
+        // --- ADDED: Property for the new Gamma setting ---
+        private decimal _atmGammaThreshold;
+        public decimal AtmGammaThreshold { get => _atmGammaThreshold; set { if (_atmGammaThreshold != value) { _atmGammaThreshold = value; OnPropertyChanged(); } } }
         #endregion
 
         #region Custom Index Levels
@@ -198,6 +203,9 @@ namespace TradingConsole.Wpf.ViewModels
             VwapUpperBandMultiplier = _settings.VwapUpperBandMultiplier;
             VwapLowerBandMultiplier = _settings.VwapLowerBandMultiplier;
 
+            // --- ADDED: Load the new Gamma setting ---
+            AtmGammaThreshold = _settings.AtmGammaThreshold;
+
 
             var niftyLevels = _settings.CustomIndexLevels.GetValueOrDefault("NIFTY", new IndexLevels());
             NiftyNoTradeUpper = niftyLevels.NoTradeUpperBand;
@@ -266,6 +274,9 @@ namespace TradingConsole.Wpf.ViewModels
 
             _settings.VwapUpperBandMultiplier = VwapUpperBandMultiplier;
             _settings.VwapLowerBandMultiplier = VwapLowerBandMultiplier;
+
+            // --- ADDED: Save the new Gamma setting ---
+            _settings.AtmGammaThreshold = AtmGammaThreshold;
 
             _settings.CustomIndexLevels["NIFTY"] = new IndexLevels
             {

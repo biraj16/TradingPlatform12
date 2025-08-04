@@ -1578,6 +1578,10 @@ namespace TradingConsole.Wpf.ViewModels
                                     rowToUpdate.CallOption.Volume = strikeData.CallOption.Volume;
                                     rowToUpdate.CallOption.IV = strikeData.CallOption.ImpliedVolatility;
                                     rowToUpdate.CallOption.Delta = strikeData.CallOption.Greeks?.Delta ?? 0;
+                                    // --- ADDED: Update new greeks on refresh ---
+                                    rowToUpdate.CallOption.Gamma = strikeData.CallOption.Greeks?.Gamma ?? 0;
+                                    rowToUpdate.CallOption.Theta = strikeData.CallOption.Greeks?.Theta ?? 0;
+                                    rowToUpdate.CallOption.Vega = strikeData.CallOption.Greeks?.Vega ?? 0;
                                     rowToUpdate.CallOption.PreviousClose = strikeData.CallOption.PreviousClose;
                                 }
 
@@ -1588,6 +1592,10 @@ namespace TradingConsole.Wpf.ViewModels
                                     rowToUpdate.PutOption.Volume = strikeData.PutOption.Volume;
                                     rowToUpdate.PutOption.IV = strikeData.PutOption.ImpliedVolatility;
                                     rowToUpdate.PutOption.Delta = strikeData.PutOption.Greeks?.Delta ?? 0;
+                                    // --- ADDED: Update new greeks on refresh ---
+                                    rowToUpdate.PutOption.Gamma = strikeData.PutOption.Greeks?.Gamma ?? 0;
+                                    rowToUpdate.PutOption.Theta = strikeData.PutOption.Greeks?.Theta ?? 0;
+                                    rowToUpdate.PutOption.Vega = strikeData.PutOption.Greeks?.Vega ?? 0;
                                     rowToUpdate.PutOption.PreviousClose = strikeData.PutOption.PreviousClose;
                                 }
 
@@ -1650,7 +1658,11 @@ namespace TradingConsole.Wpf.ViewModels
                 OiChange = apiData.OiChange,
                 OiChangePercent = apiData.OiChangePercent,
                 Volume = apiData.Volume,
-                Delta = apiData.Greeks?.Delta ?? 0
+                Delta = apiData.Greeks?.Delta ?? 0,
+                // --- ADDED: Map the new greeks from the API response to the core model ---
+                Gamma = apiData.Greeks?.Gamma ?? 0,
+                Theta = apiData.Greeks?.Theta ?? 0,
+                Vega = apiData.Greeks?.Vega ?? 0
             };
 
             return (details, scripInfo?.SemInstrumentName ?? string.Empty);

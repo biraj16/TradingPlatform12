@@ -1,4 +1,5 @@
-﻿using System.Collections.Generic;
+﻿// TradingConsole.DhanApi/Models/OptionChainModels.cs
+using System.Collections.Generic;
 using System.Text.Json.Serialization;
 using TradingConsole.Core.Models;
 
@@ -82,9 +83,22 @@ namespace TradingConsole.DhanApi.Models
     public class Greeks : ObservableModel
     {
         private decimal _delta;
+        // --- ADDED: Properties for Theta, Gamma, and Vega ---
+        private decimal _theta;
+        private decimal _gamma;
+        private decimal _vega;
 
         [JsonPropertyName("delta")]
         public decimal Delta { get => _delta; set { if (_delta != value) { _delta = value; OnPropertyChanged(nameof(Delta)); } } }
+
+        [JsonPropertyName("theta")]
+        public decimal Theta { get => _theta; set { if (_theta != value) { _theta = value; OnPropertyChanged(nameof(Theta)); } } }
+
+        [JsonPropertyName("gamma")]
+        public decimal Gamma { get => _gamma; set { if (_gamma != value) { _gamma = value; OnPropertyChanged(nameof(Gamma)); } } }
+
+        [JsonPropertyName("vega")]
+        public decimal Vega { get => _vega; set { if (_vega != value) { _vega = value; OnPropertyChanged(nameof(Vega)); } } }
     }
 
     public class ExpiryListResponse

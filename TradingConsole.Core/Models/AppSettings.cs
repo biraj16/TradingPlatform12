@@ -174,6 +174,9 @@ namespace TradingConsole.Core.Models
         public decimal VwapUpperBandMultiplier { get; set; }
         public decimal VwapLowerBandMultiplier { get; set; }
 
+        // --- ADDED: New setting for Gamma threshold ---
+        public decimal AtmGammaThreshold { get; set; }
+
 
         public Dictionary<string, IndexLevels> CustomIndexLevels { get; set; }
         public List<DateTime> MarketHolidays { get; set; }
@@ -218,6 +221,9 @@ namespace TradingConsole.Core.Models
             VolumeBurstMultiplier = 2.0;
             IvHistoryLength = 15;
             IvSpikeThreshold = 0.01m;
+
+            // --- ADDED: Default value for the new Gamma setting ---
+            AtmGammaThreshold = 0.0015m;
 
             ObvMovingAveragePeriod = 20;
 
